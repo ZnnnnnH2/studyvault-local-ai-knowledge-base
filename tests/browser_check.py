@@ -70,13 +70,13 @@ async def regression(browser, base_url: str) -> dict:
     await page.locator('#next-page').click()
     await expect(page.locator('.conversation-item')).to_have_count(5)
     await expect(page.locator('#page-info')).to_contain_text('第 2 / 2 页')
-    await expect(page.locator('#detail')).to_contain_text('选择一个会话')
+    await expect(page.locator('#detail')).to_contain_text('读全文')
     await page.locator('#query').fill('样例 00')
     await page.locator('#search-button').click()
     await expect(page.locator('.conversation-item')).to_have_count(1)
     await expect(page.locator('#page-info')).to_contain_text('第 1 / 1 页')
     await page.locator('#source-filter').select_option(label='Pi')
-    await expect(page.locator('#conversation-list')).to_contain_text('没有匹配')
+    await expect(page.locator('#conversation-list')).to_contain_text('没找到')
     await expect(page.locator('#page-info')).to_contain_text('共 0 条')
     await page.locator('#source-filter').select_option('')
     await page.locator('#query').fill('')
@@ -141,7 +141,7 @@ async def regression(browser, base_url: str) -> dict:
         await expect(page.locator('.review-card')).to_have_count(1)
         await page.locator('.reveal-answer').first.click()
         await page.locator(f'[data-grade="{grade}"]').click()
-        await expect(page.locator('#review-list')).to_contain_text('今天没有到期复习卡')
+        await expect(page.locator('#review-list')).to_contain_text('今天没卡要复习')
     await page.reload()
     await page.wait_for_function("window.studyReady === true")
     await page.locator('.nav[data-view="library"]').click()
@@ -152,7 +152,7 @@ async def regression(browser, base_url: str) -> dict:
     await expect(page.locator('.added-review')).to_have_count(2)
 
     async with page.expect_download() as download_info:
-        await page.locator('.side-note a[href="/api/export/conversations.json"]').click()
+        await page.locator('.topbar-actions a[href="/api/export/conversations.json"]').click()
     download = await download_info.value
     data = json.loads(Path(await download.path()).read_text(encoding='utf-8'))
     assert len(data) == 25 and sum(len(x['messages']) for x in data) == 50
@@ -162,10 +162,11 @@ async def regression(browser, base_url: str) -> dict:
         await page.locator('#course-export').click()
     markdown = Path(await (await download_info.value).path()).read_text(encoding='utf-8')
     assert markdown.count('## SQL 外键学习') == 25
+    await page.locator('.nav[data-view="data"]').click()
     for endpoint, name in [('/api/export/structured.jsonl', 'structured_manifest_final.jsonl'),
                            ('/api/export/manual-annotations.jsonl', 'manual_annotations_all.jsonl')]:
         async with page.expect_download() as download_info:
-            await page.locator(f'.side-note a[href="{endpoint}"]').click()
+            await page.locator(f'.snapshot-links a[href="{endpoint}"]').click()
         path = Path(await (await download_info.value).path())
         assert hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256((BASE / 'staging' / name).read_bytes()).digest()
     await page.locator('.nav[data-view="stats"]').click()
@@ -225,7 +226,7 @@ async def capture_report(browser, base_url: str) -> dict:
     await screenshot('06-due-review.png')
     await page.locator('.reveal-answer').first.click()
     await page.locator('[data-grade="correct"]').click()
-    await expect(page.locator('#review-list')).to_contain_text('今天没有到期复习卡')
+    await expect(page.locator('#review-list')).to_contain_text('今天没卡要复习')
     await screenshot('07-review-completed.png')
     await page.locator('.nav[data-view="stats"]').click()
     await expect(page.locator('#course-stats .stat-row').first).to_be_visible()

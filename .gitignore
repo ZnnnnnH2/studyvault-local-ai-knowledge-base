@@ -11,3 +11,12 @@ staging/*
 !staging/structure_and_sync.py
 !staging/README.md
 !staging/sample_*.jsonl
+
+# 本机大模型密钥，切勿提交
+.env
+.env.local
+
+# SQLite WAL 附属文件（本机真实数据库）
+*.db-shm
+*.db-wal
+*.db-journal

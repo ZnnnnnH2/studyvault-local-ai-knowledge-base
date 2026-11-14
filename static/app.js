@@ -1,6 +1,6 @@
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
-const state = {view: 'overview', selected: null, offset: 0, limit: 20, total: 0,
+const state = {view: 'library', selected: null, offset: 0, limit: 20, total: 0, items: [], cursor: -1,
   listSeq: 0, detailSeq: 0, summarySeq: 0, reviewSeq: 0, statsSeq: 0, loading: false,
   searchQuery: '', historySeq: 0, historyOffset: 0};
 
@@ -48,8 +48,51 @@ function clearDetail() {
   state.selected = null;
   state.detailSeq++;
   $('#detail').classList.add('empty');
-  $('#detail').innerHTML = '<div class="empty-state">选择一个会话查看完整上下文</div>';
+  $('#detail').innerHTML = '<div class="empty-state">← 挑一条，右边读全文</div>';
   updateSelection();
+}
+function conversationItemHtml(item) {
+  const unread = !item.last_opened_at;
+  const fav = Number(item.is_favorite) === 1;
+  const readMark = unread
+    ? '<span class="tag tag-new">未读</span>'
+    : (item.last_read_seq ? `<span class="tag tag-read">读到 #${item.last_read_seq}</span>` : '');
+  const openMark = item.unresolved_count > 0 ? `<span class="tag tag-open">${item.unresolved_count} 条没解决</span>` : '';
+  return `<div class="conversation-item${unread ? ' unread' : ''}" role="button" tabindex="0" data-id="${item.conversation_id}" data-match="${item.matched_message_id || ''}" aria-pressed="false">
+    <span class="dot" aria-hidden="true"></span>
+    <button class="fav-star${fav ? ' on' : ''}" type="button" aria-pressed="${fav}" aria-label="${fav ? '取消收藏' : '收藏'}" title="f">${fav ? '★' : '☆'}</button>
+    <strong>${highlightHtml(item.title)}</strong>
+    <span class="meta"><span>${escapeHtml(item.course_name)}</span><span>${escapeHtml(item.platform_name)}</span><span>${item.message_count} 条</span>${readMark}${openMark}</span>
+    ${item.match_snippet ? `<span class="match-snippet">#${item.match_seq_no}：${highlightHtml(item.match_snippet)}</span>` : ''}
+  </div>`;
+}
+async function toggleFavorite(id, makeFavorite, star) {
+  await post('/api/library/favorite', {conversation_id: Number(id), is_favorite: makeFavorite});
+  if (star) {
+    star.classList.toggle('on', makeFavorite);
+    star.setAttribute('aria-pressed', String(makeFavorite));
+    star.setAttribute('aria-label', makeFavorite ? '取消收藏' : '收藏');
+    star.textContent = makeFavorite ? '★' : '☆';
+  }
+  const item = (state.items || []).find(i => String(i.conversation_id) === String(id));
+  if (item) item.is_favorite = makeFavorite ? 1 : 0;
+  if ($('#favorites-only')?.checked) await loadConversations();
+  toast(makeFavorite ? '已收藏' : '已取消收藏');
+}
+function cursorRows() { return $$('#conversation-list .conversation-item'); }
+function moveCursor(delta) {
+  const rows = cursorRows();
+  if (!rows.length) { state.cursor = -1; return; }
+  state.cursor = Math.max(0, Math.min(rows.length - 1, (state.cursor < 0 ? 0 : state.cursor) + delta));
+  rows.forEach((row, index) => row.classList.toggle('cursor', index === state.cursor));
+  if (delta !== 0) rows[state.cursor].scrollIntoView({block: 'nearest'});
+}
+function openCursor() { const rows = cursorRows(); if (rows[state.cursor]) rows[state.cursor].click(); }
+function favCursor() {
+  const rows = cursorRows(); const row = rows[state.cursor];
+  if (!row) return;
+  const star = row.querySelector('.fav-star');
+  if (star) star.click();
 }
 function updatePagination() {
   const pages = Math.max(1, Math.ceil(state.total / state.limit));
@@ -62,10 +105,11 @@ async function switchView(view) {
   state.view = view;
   $$('.view').forEach(element => element.classList.toggle('hidden', element.id !== view));
   $$('.nav').forEach(element => element.classList.toggle('active', element.dataset.view === view));
-  $('#page-title').textContent = {overview: '学习总览', library: '会话库', review: '复习队列', stats: '数据统计', todos: '学习待办', data: '导入与备份'}[view];
+  $('#page-title').textContent = {overview: '学习总览', library: '会话库', review: '复习队列', stats: '数据统计', ask: '问答查询', todos: '学习待办', data: '导入与备份'}[view];
   if (view === 'library') await loadConversations();
   if (view === 'review') await Promise.all([loadReviews(), loadReviewHistory(), window.usability?.loadCards()]);
   if (view === 'stats') await loadStats();
+  if (view === 'ask') await window.askData?.load();
   if (view === 'overview') await loadSummary();
   if (view === 'todos') await window.usability.loadTodos();
   window.usability?.savePreferences();
@@ -76,7 +120,7 @@ async function loadSummary() {
   if (sequence !== state.summarySeq) return;
   const labels = [['conversations', '学习会话'], ['messages', '消息总数'], ['annotations', '未解决批注'], ['due', '今日待复习']];
   $('#cards').innerHTML = labels.map(([key, label]) => `<div class="card" data-count="${key}"><div class="label">${label}</div><div class="value">${data.counts[key]}</div><div class="label">数据库实时统计</div></div>`).join('');
-  $('#recent').innerHTML = data.recent.length ? data.recent.map(item => `<button class="recent-item" data-id="${item.conversation_id}"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.course_name)} · ${escapeHtml(item.platform_name)} · ${item.message_count} 条消息</small></span><span class="pill">打开</span></button>`).join('') : '<div class="empty-state">还没有会话。可按运行说明恢复附带数据，或扫描本机记录。</div>';
+  $('#recent').innerHTML = data.recent.length ? data.recent.map(item => `<button class="recent-item" data-id="${item.conversation_id}"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.course_name)} · ${escapeHtml(item.platform_name)} · ${item.message_count} 条消息</small></span><span class="pill">打开</span></button>`).join('') : '<div class="empty-state">还没有会话。去「导入」恢复附带数据，或点右上「扫描本机」。</div>';
   $$('.recent-item').forEach(item => item.onclick = run(async () => { await switchView('library'); await openConversation(item.dataset.id); }));
   await window.usability?.loadRecent();
 }
@@ -114,10 +158,21 @@ async function loadConversations() {
     if (sequence !== state.listSeq) return;
     state.searchQuery = params.get('q');
     state.total = data.total;
+    state.items = data.items;
+    state.cursor = data.items.length ? 0 : -1;
     if (!data.items.some(item => String(item.conversation_id) === String(state.selected))) clearDetail();
-    $('#conversation-list').innerHTML = data.items.length ? data.items.map(item => `<button class="conversation-item" data-id="${item.conversation_id}" data-match="${item.matched_message_id || ''}"><strong>${highlightHtml(item.title)}</strong><span class="meta"><span>${escapeHtml(item.course_name)}</span><span>${escapeHtml(item.platform_name)}</span><span>${item.message_count} 条消息</span></span>${item.match_snippet ? `<span class="match-snippet">命中消息 #${item.match_seq_no}：${highlightHtml(item.match_snippet)}</span>` : ''}</button>`).join('') : '<div class="panel empty-state">没有匹配的会话。</div>';
-    $$('.conversation-item').forEach(item => item.onclick = run(() => openConversation(item.dataset.id, item.dataset.match)));
+    $('#conversation-list').innerHTML = data.items.length ? data.items.map(conversationItemHtml).join('') : '<div class="list-empty">没找到。换个词，或清掉筛选试试。</div>';
+    $$('.conversation-item').forEach(item => {
+      item.onclick = run(() => { state.cursor = cursorRows().indexOf(item); moveCursor(0); return openConversation(item.dataset.id, item.dataset.match); });
+      item.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); item.click(); } };
+      const star = item.querySelector('.fav-star');
+      if (star) star.onclick = run(async event => {
+        event.stopPropagation();
+        await toggleFavorite(item.dataset.id, star.getAttribute('aria-pressed') !== 'true', star);
+      });
+    });
     updateSelection();
+    moveCursor(0);
     window.usability?.savePreferences();
   } catch (error) {
     if (sequence === state.listSeq) {
@@ -227,7 +282,7 @@ async function loadReviews() {
     const data = await api('/api/reviews/due');
     if (sequence !== state.reviewSeq) return;
     $('#due-count').textContent = `${data.length} 张`;
-    $('#review-list').innerHTML = data.length ? data.map(item => `<article class="review-card"><h3>${escapeHtml(item.question)}</h3><button class="small-button reveal-answer" type="button">显示答案（空格）</button><div class="review-answer hidden"></div><div class="meta">${escapeHtml(item.course_name)} · ${escapeHtml(item.title)} · 连续答对 ${item.review_count} 次</div><div class="review-actions hidden"><button class="small-button" data-review="${item.review_card_id}" data-grade="correct">答对，延后（2）</button><button class="small-button" data-review="${item.review_card_id}" data-grade="wrong">答错，明天再来（1）</button></div></article>`).join('') : '<div class="empty-state">今天没有到期复习卡。</div>';
+    $('#review-list').innerHTML = data.length ? data.map(item => `<article class="review-card"><h3>${escapeHtml(item.question)}</h3><button class="small-button reveal-answer" type="button">显示答案（空格）</button><div class="review-answer hidden"></div><div class="meta">${escapeHtml(item.course_name)} · ${escapeHtml(item.title)} · 连续答对 ${item.review_count} 次</div><div class="review-actions hidden"><button class="small-button" data-review="${item.review_card_id}" data-grade="correct">答对，延后（2）</button><button class="small-button" data-review="${item.review_card_id}" data-grade="wrong">答错，明天再来（1）</button></div></article>`).join('') : '<div class="empty-state">今天没卡要复习。</div>';
     $$('.review-card').forEach((card, index) => {
       card.querySelector('.reveal-answer').onclick = () => {
         const answer = card.querySelector('.review-answer'); answer.classList.remove('hidden');
@@ -288,7 +343,23 @@ $('#scan').onclick = run(async () => {
     const data = await post('/api/import/scan');
     toast(`扫描完成：新增 ${data.imported}，跳过 ${data.skipped}，失败 ${data.failed}`);
     await loadSummary(); if (state.view === 'library') await resetSearch();
-  } finally { button.disabled = false; button.textContent = '扫描本机 AI 数据'; }
+  } finally { button.disabled = false; button.textContent = '扫描本机'; }
 });
-const initialLoad = Promise.all([loadSummary(), loadFilters()]);
+function isTyping(element) {
+  return element && (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT' || element.isContentEditable);
+}
+document.addEventListener('keydown', event => {
+  if (state.view !== 'library' || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (isTyping(event.target)) { if (event.key === 'Escape') event.target.blur(); return; }
+  switch (event.key) {
+    case 'j': case 'ArrowDown': event.preventDefault(); moveCursor(1); break;
+    case 'k': case 'ArrowUp': event.preventDefault(); moveCursor(-1); break;
+    case 'o': case 'Enter': event.preventDefault(); openCursor(); break;
+    case 'f': event.preventDefault(); favCursor(); break;
+    case '/': event.preventDefault(); $('#query').focus(); break;
+    case 'Escape': clearDetail(); break;
+  }
+});
+// usability.js 依赖这个 Promise：初始化完成后才解锁导航、恢复偏好。
+const initialLoad = Promise.all([loadSummary(), loadFilters()]).then(() => switchView('library'));
 initialLoad.catch(showError);

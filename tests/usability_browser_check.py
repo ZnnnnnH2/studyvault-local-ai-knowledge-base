@@ -97,7 +97,7 @@ async def check(browser, url, root):
     await page.keyboard.press('Space')
     await expect(page.locator('.review-answer')).to_contain_text('参照完整性')
     await page.keyboard.press('2')
-    await expect(page.locator('#review-list')).to_contain_text('今天没有到期复习卡')
+    await expect(page.locator('#review-list')).to_contain_text('今天没卡要复习')
     await expect(page.locator('#review-history tbody tr')).to_have_count(1)
     await page.locator('.managed-card summary').click()
     form = page.locator('.card-edit-form')

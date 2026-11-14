@@ -688,7 +688,7 @@ def conversations(
     learning_filters(where, args, point_id, tag_id, annotation_status, review_status)
     condition = " AND ".join(where)
     with connect() as db:
-        rows = [dict(row) for row in db.execute(f"SELECT c.conversation_id,c.title,c.updated_at,c.started_at,s.platform_name,co.course_name,COUNT(m.message_id) message_count,(SELECT COUNT(*) FROM annotation a JOIN message am ON am.message_id=a.message_id WHERE am.conversation_id=c.conversation_id AND a.is_resolved=0) unresolved_count FROM conversation c JOIN conversation_source s ON s.source_id=c.source_id JOIN course co ON co.course_id=c.course_id LEFT JOIN message m ON m.conversation_id=c.conversation_id WHERE {condition} GROUP BY c.conversation_id ORDER BY c.updated_at DESC,c.conversation_id DESC LIMIT ? OFFSET ?", (*args, limit, offset))]
+        rows = [dict(row) for row in db.execute(f"SELECT c.conversation_id,c.title,c.updated_at,c.started_at,s.platform_name,co.course_name,COUNT(m.message_id) message_count,(SELECT COUNT(*) FROM annotation a JOIN message am ON am.message_id=a.message_id WHERE am.conversation_id=c.conversation_id AND a.is_resolved=0) unresolved_count,COALESCE(cs.is_favorite,0) is_favorite,cs.last_opened_at,(SELECT seq_no FROM message WHERE message_id=cs.last_message_id) last_read_seq FROM conversation c JOIN conversation_source s ON s.source_id=c.source_id JOIN course co ON co.course_id=c.course_id LEFT JOIN message m ON m.conversation_id=c.conversation_id LEFT JOIN conversation_state cs ON cs.conversation_id=c.conversation_id AND cs.owner_id=c.owner_id WHERE {condition} GROUP BY c.conversation_id ORDER BY c.updated_at DESC,c.conversation_id DESC LIMIT ? OFFSET ?", (*args, limit, offset))]
         total = db.execute(f"SELECT COUNT(*) FROM conversation c WHERE {condition}", args).fetchone()[0]
         for row in rows:
             row.update(matched_message_id=None, match_seq_no=None, match_snippet=None)
@@ -1018,6 +1018,9 @@ def export_course(course_id: int) -> Response:
 
 from usability import create_router
 app.include_router(create_router(sys.modules[__name__]))
+
+import text2sql
+app.include_router(text2sql.create_router(sys.modules[__name__]))
 
 
 if __name__ == "__main__":

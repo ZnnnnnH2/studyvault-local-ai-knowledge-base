@@ -1,0 +1,18 @@
+{"id": 1, "question": "一共有多少个会话？", "gold_sql": "SELECT COUNT(*) FROM conversation WHERE owner_id=1"}
+{"id": 2, "question": "一共有多少条消息？", "gold_sql": "SELECT COUNT(*) FROM message m JOIN conversation c ON c.conversation_id=m.conversation_id WHERE c.owner_id=1"}
+{"id": 3, "question": "用户自己发了多少条消息？", "gold_sql": "SELECT COUNT(*) FROM message m JOIN conversation c ON c.conversation_id=m.conversation_id WHERE c.owner_id=1 AND m.speaker='user'"}
+{"id": 4, "question": "助手（AI）回复了多少条消息？", "gold_sql": "SELECT COUNT(*) FROM message m JOIN conversation c ON c.conversation_id=m.conversation_id WHERE c.owner_id=1 AND m.speaker='assistant'"}
+{"id": 5, "question": "每门课程各有多少个会话？", "gold_sql": "SELECT co.course_name, COUNT(c.conversation_id) FROM course co LEFT JOIN conversation c ON c.course_id=co.course_id AND c.owner_id=1 GROUP BY co.course_id"}
+{"id": 6, "question": "每个来源平台各有多少个会话？", "gold_sql": "SELECT s.platform_name, COUNT(c.conversation_id) FROM conversation_source s LEFT JOIN conversation c ON c.source_id=s.source_id AND c.owner_id=1 GROUP BY s.source_id"}
+{"id": 7, "question": "还没解决的批注有多少条？", "gold_sql": "SELECT COUNT(*) FROM annotation WHERE is_resolved=0"}
+{"id": 8, "question": "各类型的批注各有多少条？", "gold_sql": "SELECT annotation_type, COUNT(*) FROM annotation GROUP BY annotation_type"}
+{"id": 9, "question": "一共有多少张复习卡？", "gold_sql": "SELECT COUNT(*) FROM review_card WHERE owner_id=1"}
+{"id": 10, "question": "复习答对和答错各有多少次？", "gold_sql": "SELECT l.grade, COUNT(*) FROM review_log l JOIN review_card r ON r.review_card_id=l.review_card_id WHERE r.owner_id=1 GROUP BY l.grade"}
+{"id": 11, "question": "收藏了多少个会话？", "gold_sql": "SELECT COUNT(*) FROM conversation_state WHERE owner_id=1 AND is_favorite=1"}
+{"id": 12, "question": "每门课程各有多少条消息？", "gold_sql": "SELECT co.course_name, COUNT(m.message_id) FROM course co LEFT JOIN conversation c ON c.course_id=co.course_id AND c.owner_id=1 LEFT JOIN message m ON m.conversation_id=c.conversation_id GROUP BY co.course_id"}
+{"id": 13, "question": "系统里一共有多少个知识点？", "gold_sql": "SELECT COUNT(*) FROM knowledge_point"}
+{"id": 14, "question": "有多少个不同的标签？", "gold_sql": "SELECT COUNT(*) FROM tag WHERE owner_id=1"}
+{"id": 15, "question": "处于已确认（CONFIRMED）状态的知识点关联有多少条？", "gold_sql": "SELECT COUNT(*) FROM conversation_point WHERE status='CONFIRMED'"}
+{"id": 16, "question": "标题里包含“外键”的会话有哪些标题？", "gold_sql": "SELECT title FROM conversation WHERE owner_id=1 AND title LIKE '%外键%'"}
+{"id": 17, "question": "每个来源平台各有多少条消息？", "gold_sql": "SELECT s.platform_name, COUNT(m.message_id) FROM conversation_source s LEFT JOIN conversation c ON c.source_id=s.source_id AND c.owner_id=1 LEFT JOIN message m ON m.conversation_id=c.conversation_id GROUP BY s.source_id"}
+{"id": 18, "question": "有多少条会话级的深读标注？", "gold_sql": "SELECT COUNT(*) FROM conversation_annotation"}

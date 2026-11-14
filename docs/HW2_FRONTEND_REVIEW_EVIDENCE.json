@@ -1,0 +1,18 @@
+{
+  "test": "one openConversation(1), no further user input",
+  "request_count_before_test_cutoff": 11,
+  "request_sequence": [
+    "/api/conversations/1",
+    "/api/conversations?q=",
+    "/api/conversations/1",
+    "/api/conversations?q=",
+    "/api/conversations/1",
+    "/api/conversations?q=",
+    "/api/conversations/1",
+    "/api/conversations?q=",
+    "/api/conversations/1",
+    "/api/conversations?q=",
+    "/api/conversations/1"
+  ],
+  "conclusion": "Repeated detail/list requests continue until the mock stops resolving fetch at request 11."
+}

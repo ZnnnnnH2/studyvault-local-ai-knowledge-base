@@ -1,0 +1,13 @@
+studyvault.db
+backups/
+__pycache__/
+.venv/
+*.pyc
+staging/*
+!staging/structured_manifest_final.jsonl
+!staging/structured_final_report.json
+!staging/manual_annotations_all.jsonl
+!staging/manual_annotations_all_report.json
+!staging/structure_and_sync.py
+!staging/README.md
+!staging/sample_*.jsonl

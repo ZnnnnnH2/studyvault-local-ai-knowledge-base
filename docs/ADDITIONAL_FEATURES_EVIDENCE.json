@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "dataset": "25 controlled fixture conversations; not the bundled historical corpus",
+  "javascript_errors": [],
+  "checks": [
+    "matching snippet and safe highlight",
+    "jump to matched message #2",
+    "edit course summary and tags in browser",
+    "original message unchanged",
+    "curation provenance visible",
+    "correct/wrong review logs visible",
+    "history survives reload",
+    "review outcome statistics"
+  ],
+  "screenshots": [
+    "01-message-search.png",
+    "02-manual-curation.png",
+    "03-review-history.png"
+  ]
+}

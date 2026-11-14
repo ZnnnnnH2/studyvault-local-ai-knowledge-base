@@ -1,0 +1,18 @@
+{
+  "note": "合成演示标注，非真实深读标注。与会话快照一一对应。",
+  "sessions": 14,
+  "by_platform": {
+    "Claude Code": 3,
+    "Codex": 4,
+    "DeepSeek": 2,
+    "Gemini CLI": 2,
+    "Pi": 3
+  },
+  "quality_distribution": {
+    "有效": 14
+  },
+  "confidence_distribution": {
+    "high": 11,
+    "medium": 3
+  }
+}

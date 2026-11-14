@@ -1,0 +1,91 @@
+{
+  "initial_counts": {
+    "conversations": 0,
+    "messages": 0,
+    "annotations": 0,
+    "due": 0
+  },
+  "schema_table_count": 15,
+  "foreign_key_check": [],
+  "first_import": {
+    "scanned": 25,
+    "imported": 25,
+    "skipped": 0
+  },
+  "counts_after_import": {
+    "conversations": 25,
+    "messages": 50,
+    "annotations": 0,
+    "due": 0
+  },
+  "pagination": {
+    "total": 25,
+    "page1_items": 20,
+    "page2_items": 5,
+    "overlap": false
+  },
+  "imported_structure": {
+    "messages": 2,
+    "tags_count": 1,
+    "points_count": 2,
+    "summary": null,
+    "manual_annotation": null
+  },
+  "search_results": 25,
+  "annotation": {
+    "create_status": 200,
+    "persisted_count": 1,
+    "invalid_type_status": 400
+  },
+  "review_create_status": 200,
+  "due_before_complete": 1,
+  "review_complete": {
+    "review_count": 1,
+    "interval_days": 3,
+    "due_after_complete": 0
+  },
+  "statistics": {
+    "course_conversations": 25,
+    "course_messages": 50,
+    "source_conversations": 25
+  },
+  "database_json_export_records": 25,
+  "course_markdown_export_status": 200,
+  "rescan": {
+    "scanned": 25,
+    "imported": 0,
+    "skipped": 25
+  },
+  "existing_session_after_append": {
+    "database_messages": 2,
+    "source_file_messages": 3
+  },
+  "invalid_foreign_key_rejected": true,
+  "point_stats_owner_filter": {
+    "expected_demo_sessions": 25,
+    "actual_count": 26
+  },
+  "restart_counts": {
+    "conversations": 25,
+    "messages": 50,
+    "annotations": 1,
+    "due": 0
+  },
+  "bundled_manifest": {
+    "sessions": 754,
+    "messages": 37610,
+    "by_platform": {
+      "Claude Code": 136,
+      "Codex": 591,
+      "DeepSeek": 7,
+      "Gemini CLI": 14,
+      "Pi": 6
+    }
+  },
+  "manual_annotation_records": 754,
+  "missing_files": {
+    "studyvault.db": true,
+    "staging/structured_manifest.jsonl": true
+  },
+  "static_structured_export_path": "staging\\structured_manifest_final.jsonl"
+}

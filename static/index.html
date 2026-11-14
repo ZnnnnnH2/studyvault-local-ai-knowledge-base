@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>StudyVault · 学习对话知识库</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="brand"><span class="brand-mark">S</span><div><strong>StudyVault</strong><small>学习对话知识库</small></div></div>
+    <nav aria-label="主导航">
+      <button class="nav active" data-view="overview">总览</button>
+      <button class="nav" data-view="library">会话库</button>
+      <button class="nav" data-view="review">复习队列</button>
+      <button class="nav" data-view="stats">数据统计</button>
+      <button class="nav" data-view="todos">学习待办</button>
+      <button class="nav" data-view="data">导入与备份</button>
+    </nav>
+    <div class="side-note">
+      <strong>演示账户</strong><span>本机对话只写入本地 SQLite</span>
+      <button id="scan">扫描本机 AI 数据</button>
+      <a href="/api/export/conversations.json">导出当前库 JSON</a>
+      <a href="/api/export/structured.jsonl">下载历史会话快照</a>
+      <a href="/api/export/manual-annotations.jsonl">下载历史标注快照</a>
+    </div>
+  </aside>
+  <main>
+    <header>
+      <div><p class="eyebrow">PERSONAL LEARNING DATABASE</p><h1 id="page-title">学习总览</h1><p class="sub">把分散的 AI 对话变成可追溯、可检索、可复习的知识资产。</p></div>
+      <div class="header-actions"><span class="pill">本地运行</span><a class="button ghost" href="/api/export/conversations.json">导出当前库</a></div>
+    </header>
+    <p id="app-status" class="app-status" role="alert"></p>
+    <section id="overview" class="view">
+      <div id="cards" class="cards"></div>
+      <div class="grid two">
+        <article class="panel"><div class="panel-head"><div><p class="eyebrow">RECENT ACTIVITY</p><h2>最近学习会话</h2></div><button class="text-button" data-view="library">查看全部 →</button></div><div id="recent" class="recent"></div></article>
+        <article class="panel accent"><p class="eyebrow">DATABASE EVIDENCE</p><h2>一条完整的学习链</h2><div class="chain"><span>本机 AI 数据</span><b>→</b><span>会话 / 消息</span><b>→</b><span>知识点</span><b>→</b><span>批注</span><b>→</b><span>复习卡</span></div><p class="muted">导入使用事务；来源平台、原始会话 ID 与消息序号都由关系约束保存。</p></article>
+      </div>
+      <article class="panel recent-reading-panel"><h2>最近阅读</h2><div id="reading-recent" class="recent"></div></article>
+    </section>
+    <section id="library" class="view hidden">
+      <div class="toolbar">
+        <div class="search"><span>⌕</span><input id="query" maxlength="2000" aria-label="搜索会话" placeholder="搜索标题或消息内容"></div>
+        <select id="course-filter" aria-label="课程筛选"><option value="">全部课程</option></select>
+        <select id="source-filter" aria-label="来源筛选"><option value="">全部来源</option></select>
+        <select id="point-filter" aria-label="知识点筛选"><option value="">全部知识点</option></select>
+        <select id="annotation-filter" aria-label="批注筛选"><option value="">批注不限</option><option value="open">有未解决批注</option><option value="resolved">有已解决批注</option></select>
+        <select id="review-filter" aria-label="复习筛选"><option value="">复习不限</option><option value="due">有到期复习</option><option value="active">已有复习卡</option><option value="none">尚无复习卡</option></select>
+        <button class="button" id="search-button">检索</button>
+      </div>
+      <div class="library-actions"><a id="course-export" class="button ghost hidden" href="#">导出该课程 Markdown</a></div>
+      <label class="favorite-filter"><input type="checkbox" id="favorites-only"> 只看收藏</label>
+      <div class="library-layout">
+        <div><div id="conversation-list" class="conversation-list" aria-busy="false"></div><div class="pagination" aria-label="会话分页"><button id="previous-page" class="small-button" disabled>上一页</button><span id="page-info" aria-live="polite">正在加载…</span><button id="next-page" class="small-button" disabled>下一页</button></div></div>
+        <article id="detail" class="panel detail empty"><div class="empty-state">选择一个会话查看完整上下文</div></article>
+      </div>
+    </section>
+    <section id="review" class="view hidden">
+      <div class="panel"><div class="panel-head"><div><p class="eyebrow">SPACED REVIEW</p><h2>待复习内容</h2></div><span class="pill" id="due-count">0 张</span></div><div id="review-list" class="review-list"></div></div>
+      <article class="panel review-history-panel"><div class="panel-head"><div><p class="eyebrow">REVIEW HISTORY</p><h2>逐次复习记录</h2></div></div><div id="review-history"></div><div class="pagination"><button id="history-previous" class="small-button" disabled>历史上一页</button><span id="history-info" aria-live="polite"></span><button id="history-next" class="small-button" disabled>历史下一页</button></div></article>
+      <article class="panel card-manager-panel"><div class="panel-head"><h2>复习卡管理</h2><select id="card-status" aria-label="卡片状态"><option value="">全部状态</option><option value="ACTIVE">正常复习</option><option value="SUSPENDED">已暂停</option><option value="COMPLETED">已完成</option></select></div><div id="card-manager"></div><div class="pagination"><button id="cards-previous" class="small-button">卡片上一页</button><span id="cards-info"></span><button id="cards-next" class="small-button">卡片下一页</button></div></article>
+    </section>
+    <section id="todos" class="view hidden">
+      <div class="toolbar"><select id="todo-status" aria-label="待办状态"><option value="open">未解决</option><option value="resolved">已解决</option><option value="all">全部</option></select><select id="todo-type" aria-label="待办类型"><option value="">全部类型</option><option value="QUESTION">疑问</option><option value="CORRECTION">待纠错</option><option value="IMPORTANT">重点 / 待练习</option></select></div>
+      <article class="panel"><p class="muted">在原消息下添加疑问、纠错或重点，即可在这里集中跟进。</p><div id="todo-list"></div><div class="pagination"><button id="todos-previous" class="small-button">待办上一页</button><span id="todos-info"></span><button id="todos-next" class="small-button">待办下一页</button></div></article>
+    </section>
+    <section id="data" class="view hidden">
+      <article class="panel"><h2>导入 Agent 聊天记录</h2><p class="muted">支持现有 Codex、Claude Code、Pi、DeepSeek、Gemini CLI 的未压缩 JSON / JSONL；每批最多 20 个文件、总计 100 MB。</p>
+        <form id="import-form" class="data-form"><label id="import-dropzone" class="dropzone">选择或拖入会话文件<input id="import-files" type="file" accept=".json,.jsonl" multiple required></label><label>来源平台<select id="import-platform"><option value="auto">自动识别</option><option>Codex</option><option>Claude Code</option><option>Pi</option><option>DeepSeek</option><option>Gemini CLI</option></select></label><button class="button">预览导入</button></form>
+        <div id="import-preview"></div><div id="import-progress" aria-live="polite"></div>
+      </article>
+      <article class="panel backup-panel"><h2>完整备份与恢复</h2><p class="muted">完整备份包含原始会话、批注、人工整理、复习进度与日志、收藏和阅读设置。</p><a class="button ghost" href="/api/backup" id="download-backup">下载完整备份</a>
+        <form id="restore-form" class="data-form"><label>选择 SQLite 完整备份（最多 200 MB）<input id="restore-file" type="file" accept=".sqlite3,.sqlite,.db" required></label><button class="small-button">校验并预览</button></form><div id="restore-preview"></div><div id="restore-result" aria-live="polite"></div>
+      </article>
+    </section>
+    <section id="stats" class="view hidden">
+      <p id="review-stats" class="review-stats"></p>
+      <div class="grid three">
+        <article class="panel"><p class="eyebrow">BY COURSE</p><h2>课程覆盖</h2><div id="course-stats"></div></article>
+        <article class="panel"><p class="eyebrow">BY SOURCE</p><h2>来源平台</h2><div id="source-stats"></div></article>
+        <article class="panel"><p class="eyebrow">BY KNOWLEDGE POINT</p><h2>知识点覆盖</h2><div id="point-stats"></div></article>
+      </div>
+      <article class="panel gap-panel"><div class="panel-head"><div><p class="eyebrow">KNOWLEDGE GAPS</p><h2>知识漏洞与复习优先级</h2></div><span class="muted">未解决批注 ×3 · 逾期 ×2 · 答错 ×2</span></div><div id="gap-stats"></div></article>
+      <article class="panel sql-panel"><p class="eyebrow">SQL TRACEABILITY</p><h2>关键查询证据</h2><pre>SELECT co.course_name, COUNT(DISTINCT c.conversation_id), COUNT(m.message_id)
+FROM course co
+LEFT JOIN conversation c ON c.course_id = co.course_id AND c.owner_id = :owner_id
+LEFT JOIN message m ON m.conversation_id = c.conversation_id
+GROUP BY co.course_id;</pre><p class="muted">统计来自当前数据库。右上角可导出当前库；按课程筛选后可导出 Markdown。历史快照保持原始归档内容。</p></article>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" role="status"></div>
+<script src="/static/vendor/marked/marked.umd.js"></script>
+<script src="/static/vendor/dompurify/purify.min.js"></script>
+<script src="/static/vendor/katex/katex.min.js"></script>
+<script src="/static/render.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/usability.js"></script>
+</body>
+</html>

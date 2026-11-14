@@ -1,0 +1,30 @@
+{
+  "note": "合成演示数据，非真实对话。由 staging 生成脚本产生，仅用于 --restore-bundled 演示与评测。",
+  "sessions": 14,
+  "messages": 56,
+  "user_messages": 28,
+  "assistant_messages": 28,
+  "by_platform": {
+    "Claude Code": 3,
+    "Codex": 4,
+    "DeepSeek": 2,
+    "Gemini CLI": 2,
+    "Pi": 3
+  },
+  "tags": [
+    "Git/版本控制",
+    "Python/后端",
+    "事务与并发",
+    "完整性约束",
+    "数据库/SQL",
+    "机器学习与数据分析",
+    "软件工程与测试"
+  ],
+  "knowledge_points": [
+    "SQL 与查询",
+    "事务与并发",
+    "数据库完整性",
+    "模型评估与调优",
+    "软件工程与测试"
+  ]
+}

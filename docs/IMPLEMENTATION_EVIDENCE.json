@@ -1,0 +1,53 @@
+{
+  "passed": true,
+  "browser": "Microsoft Edge (headless)",
+  "javascript_errors": [],
+  "checks": [
+    "20/5 pagination",
+    "draft stable/no request loop",
+    "annotation save",
+    "filter resets page",
+    "empty results",
+    "late detail ignored",
+    "late list ignored",
+    "request error and retry",
+    "create immediately due card",
+    "correct/wrong review",
+    "reload preserves cards",
+    "current JSON and course Markdown downloads",
+    "historical snapshot download hashes",
+    "statistics view"
+  ],
+  "restore": {
+    "inserted": 25,
+    "skipped": 0,
+    "messages_added": 50,
+    "summaries_added": 25,
+    "annotations_added": 25,
+    "tag_links_added": 50,
+    "point_links_added": 25,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "counts": {
+      "conversation": 25,
+      "message": 50,
+      "conversation_annotation": 25,
+      "conversation_tag": 50,
+      "conversation_point": 25
+    }
+  },
+  "report": {
+    "screenshots": [
+      "01-overview.png",
+      "02-pagination.png",
+      "03-search-detail.png",
+      "04-annotation.png",
+      "05-create-review.png",
+      "06-due-review.png",
+      "07-review-completed.png",
+      "08-statistics-export.png"
+    ],
+    "dataset": "synthetic demo fixtures",
+    "demonstration_note": "All data is synthetic; only the annotation and review card were added for the demonstration."
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "passed": true,
+  "dataset": "25 controlled conversations, one temporary upload and round-trip backup restore",
+  "browser": "Microsoft Edge headless",
+  "javascript_errors": [],
+  "external_page_requests": [],
+  "checks": [
+    "Markdown headings tables math",
+    "safe rendering of script/image input",
+    "copy code",
+    "favorites filter",
+    "restore filters selected conversation and message position after reload",
+    "todo resolve reopen and source jump",
+    "answer hidden until reveal",
+    "Space and 2 keyboard review",
+    "edit suspend resume card without losing history",
+    "upload NEW DUPLICATE INVALID preview",
+    "background import progress",
+    "complete SQLite download includes learning state",
+    "restore preview does not write data",
+    "confirmed restore removes later import",
+    "download pre-restore safety snapshot"
+  ],
+  "screenshots": [
+    "01-markdown-math-code.png",
+    "02-favorite-reading.png",
+    "03-learning-todos.png",
+    "04-recall-before-answer.png",
+    "05-card-management.png",
+    "06-import-preview.png",
+    "07-import-progress.png",
+    "08-complete-backup-restore.png"
+  ]
+}

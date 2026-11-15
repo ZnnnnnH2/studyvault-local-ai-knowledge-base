@@ -147,6 +147,8 @@ CREATE TABLE IF NOT EXISTS review_card (
     review_count INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','SUSPENDED','COMPLETED')),
     last_reviewed_at TEXT,
+    ease_factor REAL NOT NULL DEFAULT 2.5 CHECK(ease_factor >= 1.3),
+    lapse_count INTEGER NOT NULL DEFAULT 0 CHECK(lapse_count >= 0),
     UNIQUE(owner_id, message_id)
 );
 
@@ -177,7 +179,9 @@ CREATE TABLE IF NOT EXISTS review_log (
     streak_before INTEGER NOT NULL,
     streak_after INTEGER NOT NULL,
     due_before TEXT NOT NULL,
-    due_after TEXT NOT NULL
+    due_after TEXT NOT NULL,
+    ease_before REAL,
+    ease_after REAL
 );
 CREATE INDEX IF NOT EXISTS idx_review_log_card_time ON review_log(review_card_id, reviewed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_curation_record ON audit_log(table_name, record_id, operation, audit_id DESC);

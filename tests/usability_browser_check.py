@@ -70,17 +70,19 @@ async def check(browser, url, root):
     await message.locator('.annotation-form input').fill('需要再验证外键删除时的行为。')
     await message.locator('.annotation-form button').click()
     await expect(page.locator('.annotation')).to_have_count(1)
-    await page.locator('.nav[data-view="todos"]').click()
-    await expect(page.locator('.todo-item')).to_have_count(1)
-    await screenshot('03-learning-todos.png')
-    await page.locator('.todo-resolve').click()
-    await expect(page.locator('#todo-list')).to_contain_text('没有学习待办')
-    await page.locator('#todo-status').select_option('resolved')
-    await expect(page.locator('.todo-item')).to_have_count(1)
-    await page.locator('.todo-resolve').click()
-    await page.locator('#todo-status').select_option('open')
-    await expect(page.locator('.todo-item')).to_have_count(1)
-    await page.locator('.todo-jump').click()
+    await page.locator('.nav[data-view="mistakes"]').click()
+    await expect(page.locator('.eb-item')).to_have_count(1)
+    await expect(page.locator('.eb-item .eb-kind')).to_have_text('疑问')
+    await expect(page.locator('#eb-summary')).to_contain_text('1个疑问没弄懂')
+    await screenshot('03-error-book.png')
+    await page.locator('.eb-resolve').click()
+    await expect(page.locator('#eb-groups')).to_contain_text('这里空着')
+    await page.locator('#eb-status label:has-text("已攻克")').click()
+    await expect(page.locator('.eb-item.done')).to_have_count(1)
+    await page.locator('.eb-resolve').click()
+    await page.locator('#eb-status label:has-text("没掌握")').click()
+    await expect(page.locator('.eb-item')).to_have_count(1)
+    await page.locator('.eb-source').click()
     await expect(page.locator('.message.search-hit .speaker')).to_contain_text('#2')
     message = page.locator('.message').nth(1)
     await message.locator('.add-review').click()
@@ -158,7 +160,7 @@ async def check(browser, url, root):
               'browser': 'Microsoft Edge headless', 'javascript_errors': errors, 'external_page_requests': external,
               'checks': ['Markdown headings tables math', 'safe rendering of script/image input', 'copy code',
                          'favorites filter', 'restore filters selected conversation and message position after reload',
-                         'todo resolve reopen and source jump', 'answer hidden until reveal', 'Space and 2 keyboard review',
+                         'error book: doubt appears, resolve, reopen from mastered, jump to source', 'answer hidden until reveal', 'Space and 2 keyboard review',
                          'edit suspend resume card without losing history', 'upload NEW DUPLICATE INVALID preview',
                          'background import progress', 'complete SQLite download includes learning state',
                          'restore preview does not write data', 'confirmed restore removes later import', 'download pre-restore safety snapshot'],

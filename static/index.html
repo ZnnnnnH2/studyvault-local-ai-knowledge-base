@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>StudyVault · 学习对话知识库</title>
+  <title>StudyVault · AI 对话错题本</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
 </head>
@@ -12,12 +12,12 @@
   <div class="topbar-inner">
     <a class="wordmark" href="/"><span class="mark">S</span><span>StudyVault</span></a>
     <nav class="topnav" aria-label="主导航">
-      <button class="nav" data-view="overview">总览</button>
-      <button class="nav active" data-view="library">会话库</button>
+      <button class="nav active" data-view="mistakes">错题本</button>
+      <button class="nav" data-view="library">会话库</button>
       <button class="nav" data-view="review">复习</button>
+      <button class="nav" data-view="overview">总览</button>
       <button class="nav" data-view="stats">统计</button>
       <button class="nav" data-view="ask">问答</button>
-      <button class="nav" data-view="todos">待办</button>
       <button class="nav" data-view="data">导入</button>
     </nav>
     <div class="topbar-actions">
@@ -28,7 +28,7 @@
 </header>
 <main class="content">
   <p id="app-status" class="app-status" role="alert"></p>
-  <div class="view-head"><h1 id="page-title">会话库</h1></div>
+  <div class="view-head"><h1 id="page-title">错题本</h1></div>
 
   <section id="overview" class="view hidden">
     <div id="cards" class="stat-strip"></div>
@@ -38,7 +38,27 @@
     <div id="reading-recent" class="recent"></div>
   </section>
 
-  <section id="library" class="view">
+  <section id="mistakes" class="view">
+    <p class="eb-lede">跟 AI 来回问得最多的地方，往往就是自己没懂的地方。读对话时记下的<b>疑问</b>、发现 <b>AI 答错</b>的地方、复习时<b>答错过的卡</b>，都收在这里，按知识点排好先后。</p>
+    <div id="eb-summary" class="eb-summary"></div>
+    <div class="eb-toolbar">
+      <div id="eb-status" class="seg" role="radiogroup" aria-label="掌握情况">
+        <label><input type="radio" name="eb-status" value="open" checked><span>没掌握</span></label>
+        <label><input type="radio" name="eb-status" value="mastered"><span>已攻克</span></label>
+        <label><input type="radio" name="eb-status" value="all"><span>全部</span></label>
+      </div>
+      <div id="eb-kind" class="seg" role="radiogroup" aria-label="错题类型">
+        <label><input type="radio" name="eb-kind" value="" checked><span>三种都看</span></label>
+        <label><input type="radio" name="eb-kind" value="question"><span>疑问</span></label>
+        <label><input type="radio" name="eb-kind" value="correction"><span>AI 答错</span></label>
+        <label><input type="radio" name="eb-kind" value="card"><span>常错卡</span></label>
+      </div>
+      <select id="eb-course" aria-label="课程"><option value="">全部课程</option></select>
+    </div>
+    <div id="eb-groups" class="eb-groups" aria-busy="false"></div>
+  </section>
+
+  <section id="library" class="view hidden">
     <div class="toolbar">
       <div class="search"><span>⌕</span><input id="query" maxlength="2000" aria-label="搜索会话" placeholder="搜标题或正文…"></div>
       <select id="course-filter" aria-label="课程筛选"><option value="">全部课程</option></select>
@@ -65,14 +85,9 @@
     <article class="panel card-manager-panel"><div class="panel-head"><h2>复习卡管理</h2><select id="card-status" aria-label="卡片状态"><option value="">全部状态</option><option value="ACTIVE">正常复习</option><option value="SUSPENDED">已暂停</option><option value="COMPLETED">已完成</option></select></div><div id="card-manager"></div><div class="pagination"><button id="cards-previous" class="small-button">卡片上一页</button><span id="cards-info"></span><button id="cards-next" class="small-button">卡片下一页</button></div></article>
   </section>
 
-  <section id="todos" class="view hidden">
-    <div class="toolbar"><select id="todo-status" aria-label="待办状态"><option value="open">未解决</option><option value="resolved">已解决</option><option value="all">全部</option></select><select id="todo-type" aria-label="待办类型"><option value="">全部类型</option><option value="QUESTION">疑问</option><option value="CORRECTION">待纠错</option><option value="IMPORTANT">重点 / 待练习</option></select></div>
-    <article class="panel"><p class="muted">在原消息下添加疑问、纠错或重点，即可在这里集中跟进。</p><div id="todo-list"></div><div class="pagination"><button id="todos-previous" class="small-button">待办上一页</button><span id="todos-info"></span><button id="todos-next" class="small-button">待办下一页</button></div></article>
-  </section>
-
   <section id="data" class="view hidden">
-    <article class="panel"><h2>导入 Agent 聊天记录</h2><p class="muted">支持现有 Codex、Claude Code、Pi、DeepSeek、Gemini CLI 的未压缩 JSON / JSONL；每批最多 20 个文件、总计 100 MB。</p>
-      <form id="import-form" class="data-form"><label id="import-dropzone" class="dropzone">选择或拖入会话文件<input id="import-files" type="file" accept=".json,.jsonl" multiple required></label><label>来源平台<select id="import-platform"><option value="auto">自动识别</option><option>Codex</option><option>Claude Code</option><option>Pi</option><option>DeepSeek</option><option>Gemini CLI</option></select></label><button class="button">预览导入</button></form>
+    <article class="panel"><h2>导入 Agent 聊天记录</h2><p class="muted">网页版：ChatGPT「设置 → 数据控制 → 导出数据」里的 <code>conversations.json</code>，一个文件含全部会话，可逐条勾选。Agent：Codex、Claude Code、Pi、DeepSeek、Gemini CLI 的未压缩 JSON / JSONL。每批最多 20 个文件、总计 100 MB。</p>
+      <form id="import-form" class="data-form"><label id="import-dropzone" class="dropzone">选择或拖入会话文件<input id="import-files" type="file" accept=".json,.jsonl" multiple required></label><label>来源平台<select id="import-platform"><option value="auto">自动识别</option><option>ChatGPT</option><option>Codex</option><option>Claude Code</option><option>Pi</option><option>DeepSeek</option><option>Gemini CLI</option></select></label><button class="button">预览导入</button></form>
       <div id="import-preview"></div><div id="import-progress" aria-live="polite"></div>
     </article>
     <article class="panel backup-panel"><h2>完整备份与恢复</h2><p class="muted">完整备份包含原始会话、批注、人工整理、复习进度与日志、收藏和阅读设置。</p><a class="button ghost" href="/api/backup" id="download-backup">下载完整备份</a>
@@ -90,7 +105,7 @@
       <article class="panel"><h2>来源平台</h2><div id="source-stats"></div></article>
       <article class="panel"><h2>知识点覆盖</h2><div id="point-stats"></div></article>
     </div>
-    <article class="panel gap-panel"><div class="panel-head"><h2>知识漏洞与复习优先级</h2><span class="muted">未解决批注 ×3 · 逾期 ×2 · 答错 ×2</span></div><div id="gap-stats"></div></article>
+    <article class="panel gap-panel"><div class="panel-head"><h2>每周错题进出</h2><span class="muted">按知识点排的漏洞清单在「错题本」</span></div><div id="weekly-stats"></div></article>
     <article class="panel sql-panel"><h2>关键查询证据</h2><pre>SELECT co.course_name, COUNT(DISTINCT c.conversation_id), COUNT(m.message_id)
 FROM course co
 LEFT JOIN conversation c ON c.course_id = co.course_id AND c.owner_id = :owner_id
@@ -125,5 +140,6 @@ GROUP BY co.course_id;</pre><p class="muted">统计来自当前数据库。顶�
 <script src="/static/app.js"></script>
 <script src="/static/usability.js"></script>
 <script src="/static/text2sql.js"></script>
+<script src="/static/errorbook.js"></script>
 </body>
 </html>

@@ -52,8 +52,8 @@ _READONLY_AUTH = {
 # ---------------------------------------------------------------------------
 STRUCTURED_SCHEMA: dict[str, tuple[list[str], str]] = {
     "course": (["course_id", "course_name"], "课程"),
-    "knowledge_point": (["point_id", "point_name"], "知识点"),
-    "conversation_source": (["source_id", "platform_name"], "来源平台，如 Codex / Claude Code / DeepSeek"),
+    "knowledge_point": (["point_id", "course_id", "point_name"], "知识点，每个知识点属于一门课程"),
+    "conversation_source": (["source_id", "platform_name"], "来源平台，如 ChatGPT / DeepSeek / Codex / Claude Code"),
     "conversation": (
         ["conversation_id", "owner_id", "course_id", "source_id", "source_conversation_id", "title", "summary", "started_at", "updated_at"],
         "会话；演示用户 owner_id=1；收藏与阅读状态在 conversation_state，不在这里",
@@ -73,24 +73,27 @@ STRUCTURED_SCHEMA: dict[str, tuple[list[str], str]] = {
         "会话-知识点；status 取值 'PROPOSED'/'CONFIRMED'/'REJECTED'",
     ),
     "annotation": (
-        ["annotation_id", "message_id", "annotation_type", "content", "is_resolved"],
-        "消息级批注；annotation_type 取值 'NOTE'/'QUESTION'/'CORRECTION'/'IMPORTANT'；is_resolved 0/1",
+        ["annotation_id", "message_id", "annotation_type", "content", "is_resolved", "created_at", "updated_at"],
+        "消息级批注；annotation_type：'QUESTION'=学生没弄懂的疑问，'CORRECTION'=AI 答错、被学生指出，'NOTE'=笔记，'IMPORTANT'=重点；"
+        "is_resolved 0=还没弄懂/没核对 1=已解决（解决时间≈updated_at）",
     ),
     "conversation_annotation": (
         ["annotation_id", "conversation_id", "summary_manual", "intent", "quality", "confidence"],
         "会话级深读标注；quality 取值 '有效'/'混合'/'低价值'",
     ),
     "review_card": (
-        ["review_card_id", "message_id", "owner_id", "question", "answer", "due_at", "interval_days", "review_count", "status"],
-        "复习卡；owner_id=1；status 取值 'ACTIVE'/'SUSPENDED'/'COMPLETED'；review_count 为连续答对次数",
+        ["review_card_id", "message_id", "owner_id", "question", "answer", "due_at", "interval_days", "review_count", "lapse_count", "ease_factor", "status", "last_reviewed_at"],
+        "复习卡；owner_id=1；status 取值 'ACTIVE'/'SUSPENDED'/'COMPLETED'；review_count=当前连续答对次数；"
+        "lapse_count=累计答错次数；ease_factor=SM-2 难度系数（越低越难）；due_at<=当前时间表示到期",
     ),
     "review_log": (
-        ["review_log_id", "review_card_id", "grade", "reviewed_at"],
+        ["review_log_id", "review_card_id", "grade", "reviewed_at", "interval_after", "streak_after"],
         "每次复习记录；grade 取值 'correct'/'wrong'",
     ),
 }
 
 FOREIGN_KEYS = [
+    ("knowledge_point.course_id", "course.course_id"),
     ("conversation.course_id", "course.course_id"),
     ("conversation.source_id", "conversation_source.source_id"),
     ("conversation_state.conversation_id", "conversation.conversation_id"),
@@ -108,7 +111,8 @@ FOREIGN_KEYS = [
 CONVENTIONS = (
     "约定：会话归属用 conversation.owner_id = 1；复习卡用 review_card.owner_id = 1。"
     "统计消息条数用 message 表（需要归属时 JOIN conversation）；统计会话数用 conversation 表。"
-    "时间列为 ISO8601 文本，可用字符串比较或 date()/datetime()。"
+    "时间列都是 UTC 文本，但格式不完全一致（有 '2026-11-13 22:00:00' 也有 '2026-11-13T22:00:00Z'），"
+    "按时间比较或分组时先用 datetime(列) 或 date(列) 统一，例如 datetime(a.created_at) >= datetime('now','-7 days')。"
 )
 
 
@@ -146,12 +150,12 @@ CALIBRATION_HINTS = (
 )
 
 EXAMPLES = [
+    "哪门课我还没弄懂的疑问最多？",
+    "AI 答错最多的是哪几个知识点？",
+    "答错次数最多的 5 张复习卡",
+    "最近 7 天我记了哪些疑问？",
     "每门课程各有多少会话和消息？",
-    "各来源平台的会话数量排名",
-    "未解决的疑问批注有多少条？",
-    "复习答对和答错各多少次？",
-    "标题里包含“外键”的会话有哪些？",
-    "最近更新的 10 个会话",
+    "哪些知识点有对话但还没出过复习卡？",
 ]
 
 
@@ -261,12 +265,13 @@ def run_readonly(db_path: Path, sql: str, limit: int = ROW_LIMIT) -> dict[str, A
         connection.set_authorizer(_authorizer)
         try:
             cursor = connection.execute(sql)
+            # SQLite does part of the work lazily while rows are fetched, so the step cap can fire here too.
+            fetched = cursor.fetchmany(limit + 1)
         except sqlite3.OperationalError as exc:
             if "interrupt" in str(exc).lower() or "abort" in str(exc).lower():
                 raise ValueError("查询过于复杂或耗时过长，已中止") from exc
             raise ValueError(f"SQL 执行失败：{exc}") from exc
         columns = [d[0] for d in cursor.description] if cursor.description else []
-        fetched = cursor.fetchmany(limit + 1)
         truncated = len(fetched) > limit
         rows = [list(r) for r in fetched[:limit]]
         return {"columns": columns, "rows": rows, "truncated": truncated}

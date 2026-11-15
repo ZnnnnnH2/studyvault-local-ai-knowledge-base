@@ -10,7 +10,7 @@
     "copy code",
     "favorites filter",
     "restore filters selected conversation and message position after reload",
-    "todo resolve reopen and source jump",
+    "error book: doubt appears, resolve, reopen from mastered, jump to source",
     "answer hidden until reveal",
     "Space and 2 keyboard review",
     "edit suspend resume card without losing history",
@@ -24,7 +24,7 @@
   "screenshots": [
     "01-markdown-math-code.png",
     "02-favorite-reading.png",
-    "03-learning-todos.png",
+    "03-error-book.png",
     "04-recall-before-answer.png",
     "05-card-management.png",
     "06-import-preview.png",

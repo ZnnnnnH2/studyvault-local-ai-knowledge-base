@@ -39,7 +39,7 @@ class ProgressInput(BaseModel):
 
 
 class LibraryPreferences(BaseModel):
-    view: Literal['overview', 'library', 'review', 'stats', 'todos', 'data'] = 'overview'
+    view: Literal['mistakes', 'overview', 'library', 'review', 'stats', 'ask', 'todos', 'data'] = 'mistakes'
     q: str = Field('', max_length=2000)
     course_id: int | None = None
     source_id: int | None = None
@@ -54,7 +54,7 @@ class RestoreInput(BaseModel):
 
 class ImportInput(BaseModel):
     preview_token: str
-    selected: list[int] = Field(min_length=1, max_length=20)
+    selected: list[int] = Field(min_length=1, max_length=5000)
 
 
 def create_router(backend: Any) -> APIRouter:
@@ -299,6 +299,12 @@ def create_router(backend: Any) -> APIRouter:
         return FileResponse(path, filename=f'studyvault-before-restore-{backup_id}.sqlite3', media_type='application/vnd.sqlite3')
 
     def detect_platform(path: Path):
+        if path.suffix == '.json':
+            try:
+                if backend.is_chatgpt_export(json.loads(path.read_text(encoding='utf-8-sig', errors='replace'))):
+                    return 'ChatGPT'
+            except json.JSONDecodeError:
+                pass
         for record in itertools.islice(backend.iter_records(path), 40):
             kind = record.get('type')
             if kind in {'session_meta', 'response_item'}:
@@ -315,32 +321,32 @@ def create_router(backend: Any) -> APIRouter:
 
     @router.post('/api/import/preview')
     async def preview_import(files: list[UploadFile] = File(...), platform: str = Form('auto')):
-        if not 1 <= len(files) <= 20 or platform not in {'auto', *backend.SOURCE_ROOTS}:
+        if not 1 <= len(files) <= 20 or platform not in {'auto', *backend.PLATFORMS}:
             raise HTTPException(400, '每批请选择 1–20 个文件和有效来源平台')
         token, item = new_session('import')
         candidates, total_bytes = [], 0
-        for index, upload in enumerate(files):
+        for file_index, upload in enumerate(files):
             name = Path((upload.filename or 'unnamed').replace('\\', '/')).name
-            candidate: dict[str, Any] = {'index': index, 'file_name': name, 'status': 'INVALID', 'message_count': 0}
-            candidates.append(candidate)
             if Path(name).suffix.lower() not in {'.json', '.jsonl'}:
-                candidate['error'] = '支持未压缩的 .json / .jsonl Agent 会话文件'
+                candidates.append({'index': len(candidates), 'file_name': name, 'status': 'INVALID', 'message_count': 0, 'error': '支持未压缩的 .json / .jsonl 会话文件'})
                 await upload.close()
                 continue
-            folder = item['directory'] / str(index)
+            folder = item['directory'] / str(file_index)
             folder.mkdir()
             path = folder / (Path(name).stem + Path(name).suffix.lower())
             total_bytes += await save_upload(upload, path, 100 * 1024 * 1024 - total_bytes)
             try:
                 source = detect_platform(path) if platform == 'auto' else platform
-                parsed = backend.parse_conversation(path, source)
-                parsed['path'] = f'upload/{name}'
+                # A ChatGPT export holds every conversation of the account; Agent files hold one.
+                conversations = backend.parse_file(path, source)
                 with backend.connect() as db:
                     source_id = backend.source_row(db, source)['source_id']
-                    duplicate = bool(db.execute('SELECT 1 FROM conversation WHERE owner_id=? AND source_id=? AND source_conversation_id=?', (backend.DEMO_USER_ID, source_id, parsed['source_id'])).fetchone())
-                candidate.update(platform=source, title=parsed['title'], message_count=len(parsed['messages']), status='DUPLICATE' if duplicate else 'NEW', parsed=parsed)
+                    for parsed in conversations:
+                        parsed['path'] = f'upload/{name}'
+                        duplicate = bool(db.execute('SELECT 1 FROM conversation WHERE owner_id=? AND source_id=? AND source_conversation_id=?', (backend.DEMO_USER_ID, source_id, parsed['source_id'])).fetchone())
+                        candidates.append({'index': len(candidates), 'file_name': name, 'platform': source, 'title': parsed['title'], 'message_count': len(parsed['messages']), 'status': 'DUPLICATE' if duplicate else 'NEW', 'parsed': parsed})
             except (ValueError, OSError, RuntimeError, TypeError, AttributeError, KeyError) as exc:
-                candidate['error'] = str(exc).replace(str(item['directory']), '上传文件')
+                candidates.append({'index': len(candidates), 'file_name': name, 'status': 'INVALID', 'message_count': 0, 'error': str(exc).replace(str(item['directory']), '上传文件')})
         item['candidates'] = candidates
         return {'token': token, 'candidates': [{k: v for k, v in row.items() if k != 'parsed'} for row in candidates], 'counts': {status: sum(row['status'] == status for row in candidates) for status in ('NEW', 'DUPLICATE', 'INVALID')}}
 
@@ -361,9 +367,9 @@ def create_router(backend: Any) -> APIRouter:
                         if database_key() != database:
                             raise ValueError('当前数据库已切换，停止导入')
                         result = backend.import_parsed(candidate['parsed'], candidate['platform'])
-                    outcome = {'file_name': candidate['file_name'], 'status': result['status'], 'messages': result['messages']}
+                    outcome = {'file_name': candidate['file_name'], 'title': candidate.get('title', ''), 'status': result['status'], 'messages': result['messages']}
                 except Exception as exc:
-                    outcome = {'file_name': candidate['file_name'], 'status': 'FAILED', 'error': str(exc)}
+                    outcome = {'file_name': candidate['file_name'], 'title': candidate.get('title', ''), 'status': 'FAILED', 'error': str(exc)}
                 with task_lock:
                     task['processed'] += 1
                     task[{'SUCCESS': 'imported', 'SKIPPED': 'skipped', 'FAILED': 'failed'}[outcome['status']]] += 1

@@ -4,10 +4,12 @@
 并执行，按结果集指纹（忽略列名、行序、列序的值多重集合）与标准结果比对。生成报错、
 未通过安全校验、或结果不一致都记为错。
 
-评测库：默认在临时目录里构建一个**可复现的合成评测库**——附带演示数据（14 个会话）
-再加一组确定性的批注 / 复习卡 / 复习记录 / 收藏 / 已确认知识点。只用演示数据的话，
-有 6 道题的标准答案是 0 或空集，任何"查不到东西"的错误 SQL 都会被判对。
+评测库：默认在临时目录里用 `app.py --demo` 同样的步骤构建——附带的 90 段合成对话，加上
+一学期的模拟学习记录（批注、复习卡、复习历史、收藏、阅读进度、已确认知识点）。
 也可以用 --db 指定已有数据库（只读使用，不会修改）。
+
+题目分两档：basic（1–18，单表计数为主）和 learner（19 起，学生对错题本真会问的问题：
+多表连接、时间窗口、比例、反连接、并列排名）。两档分开报准确率。
 
 用法（需要配置大模型 Key，评测会真实调用 DeepSeek，花费 token）：
     PYTHONPATH=. python eval/run_text2sql_eval.py
@@ -42,7 +44,14 @@ METHODS = ["baseline", "c3"]
 
 
 def build_eval_db(path: Path) -> None:
-    """演示数据 + 确定性补充数据。各计数刻意取不同的值，写错过滤条件就会对不上。"""
+    """与 `app.py --demo` 相同：附带会话 + 一学期模拟学习记录。"""
+    app.DB_PATH = path
+    app.restore_bundled()
+    app.seed_demo_activity()
+
+
+def build_legacy_eval_db(path: Path) -> None:
+    """旧版评测库（14 段演示会话 + 确定性补充），保留以便复现第一次评测。"""
     app.DB_PATH = path
     app.restore_bundled()
     db = sqlite3.connect(path)
@@ -117,17 +126,19 @@ def main() -> int:
     else:
         db_path = Path(tempfile.mkdtemp(prefix="t2s-eval-")) / "eval.db"
         build_eval_db(db_path)
-        db_label = "合成评测库（演示数据 + 确定性补充）"
+        db_label = "演示学期库（90 段合成对话 + 模拟学习记录，同 app.py --demo）"
     print(f"数据库：{db_label}")
     print(f"模型：{config['model']} · C3 采样数：{config['samples']} · 用例：{len(cases)}\n")
 
+    tiers = sorted({c.get("tier", "basic") for c in cases}, key=["basic", "learner"].index)
+    tier_score = {(tier, m): 0 for tier in tiers for m in METHODS}
     score = {m: 0 for m in METHODS}
     seconds = {m: 0.0 for m in METHODS}
     golds = {}
     for case in cases:
         gold = t.run_readonly(db_path, case["gold_sql"])
         golds[case["id"]] = (gold, t.result_signature(gold))
-    lines = {case["id"]: {"id": case["id"], "question": case["question"], "gold_sql": case["gold_sql"],
+    lines = {case["id"]: {"id": case["id"], "tier": case.get("tier", "basic"), "question": case["question"], "gold_sql": case["gold_sql"],
                           "gold_rows": golds[case["id"]][0]["rows"][:5]} for case in cases}
     jobs = [(case, method) for case in cases for method in METHODS]
     workers = int(os.getenv("STUDYVAULT_EVAL_WORKERS", str(len(jobs))))
@@ -140,6 +151,7 @@ def main() -> int:
             pred = future.result()
             ok = bool(pred["result"]) and not pred["error"] and t.result_signature(pred["result"]) == golds[case["id"]][1]
             score[method] += ok
+            tier_score[(case.get("tier", "basic"), method)] += ok
             seconds[method] += pred["seconds"]
             lines[case["id"]][method] = {"ok": ok, "sql": pred["sql"], "error": pred["error"], "seconds": pred["seconds"],
                                          "rows": pred["result"]["rows"][:5] if pred["result"] else None, "c3": pred["c3"]}
@@ -151,6 +163,9 @@ def main() -> int:
     print("\n=== 执行准确率 ===")
     for method in METHODS:
         print(f"{method:>8}: {score[method]}/{n} = {score[method] / n:.1%} · 平均 {seconds[method] / n:.1f} 秒/题")
+    for tier in tiers:
+        size = sum(c.get("tier", "basic") == tier for c in cases)
+        print(f"  {tier:>8}: " + " · ".join(f"{m} {tier_score[(tier, m)]}/{size}" for m in METHODS))
     print(f"总墙钟时间：{wall:.1f} 秒")
 
     with DETAIL.open("w", encoding="utf-8") as fh:
@@ -170,11 +185,15 @@ def main() -> int:
           "| 方法 | 正确 | 准确率 | 平均耗时 |", "| --- | --- | --- | --- |"]
     for method in METHODS:
         md.append(f"| {method} | {score[method]}/{n} | {score[method] / n:.1%} | {seconds[method] / n:.1f} 秒/题 |")
-    md += ["\n## 逐题结果\n", "| # | 问题 | baseline | C3 | C3 胜出票 / 可执行（分组） | C3 召回表 |",
-           "| --- | --- | --- | --- | --- | --- |"]
+    md += ["\n### 分档\n", "| 档 | 题数 | " + " | ".join(METHODS) + " |", "| --- | --- | " + " | ".join("---" for _ in METHODS) + " |"]
+    for tier in tiers:
+        size = sum(c.get("tier", "basic") == tier for c in cases)
+        md.append(f"| {tier} | {size} | " + " | ".join(f"{tier_score[(tier, m)]}/{size}（{tier_score[(tier, m)] / size:.0%}）" for m in METHODS) + " |")
+    md += ["\n## 逐题结果\n", "| # | 档 | 问题 | baseline | C3 | C3 胜出票 / 可执行（分组） | C3 召回表 |",
+           "| --- | --- | --- | --- | --- | --- | --- |"]
     for line in rows:
         tables = ", ".join((line["c3"]["c3"] or {}).get("linked_tables", [])) or "—"
-        md.append(f"| {line['id']} | {line['question']} | {'✅' if line['baseline']['ok'] else '❌'} | "
+        md.append(f"| {line['id']} | {line['tier']} | {line['question']} | {'✅' if line['baseline']['ok'] else '❌'} | "
                   f"{'✅' if line['c3']['ok'] else '❌'} | {votes(line)} | {tables} |")
     OUT.write_text("\n".join(md) + "\n", encoding="utf-8")
     print(f"\n已写入 {OUT.relative_to(ROOT)} 与 {DETAIL.relative_to(ROOT)}")

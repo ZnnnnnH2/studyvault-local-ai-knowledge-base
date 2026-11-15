@@ -2,13 +2,13 @@
 
 ## 1. 实施计划与完成情况
 
-实施前的范围、顺序、接口与验收条件见 [实施计划](USABILITY_PLAN.md)。本轮落实全部七项，复用已有 SQLite/FastAPI，不引入云服务或大模型 API。
+这七项是围绕日常使用补上的功能，复用已有 SQLite/FastAPI，不依赖云服务或大模型 API。实施前的计划归档在 [archive/USABILITY_PLAN.md](archive/USABILITY_PLAN.md)。
 
 | 编号 | 功能 | 状态 | 入口 |
 | --- | --- | --- | --- |
 | U01 | 先回忆再揭晓答案，支持复习快捷键 | 已实现 | 复习队列。 |
 | U02 | 完整备份、上传校验预览、确认恢复及恢复前备份 | 已实现 | 导入与备份。 |
-| U03 | 学习待办、解决/重开与原消息跳转 | 已实现 | 学习待办。 |
+| U03 | 疑问与纠错的集中跟进、解决/重开与原消息跳转 | 已并入错题本 | 错题本。 |
 | U04 | Markdown、公式、表格、代码块与代码复制 | 已实现 | 会话正文、揭晓后的复习答案。 |
 | U05 | 复习卡编辑、暂停/恢复、到期日期调整 | 已实现 | 复习队列 → 复习卡管理。 |
 | U06 | 收藏筛选、最近阅读及界面/消息位置恢复 | 已实现 | 会话详情、只看收藏、总览最近阅读。 |
@@ -57,18 +57,11 @@
 
 ![完整恢复及恢复前备份下载](screenshots-usability/08-complete-backup-restore.png)
 
-## 4. U03：集中跟进学习待办
+## 4. U03：集中跟进疑问和纠错（已并入错题本）
 
-复用用户消息批注：QUESTION 为疑问、CORRECTION 为待纠错、IMPORTANT 为重点/待练习。普通 NOTE 不自动进入待办，也不把历史深读标注中的推断问题直接变成用户任务。
+这一项最初是单独的“学习待办”页面，列出疑问、纠错和重点三类批注。现在疑问和 AI 答错两类连同答错过的复习卡一起并入了“错题本”页面，按知识点分组、按优先级排序，设计与 SQL 见 [项目报告](PROJECT_REPORT.md) 的 R05。重点（IMPORTANT）是书签而不是错，留在会话详情里显示。`GET /api/todos` 接口仍保留，返回三类批注的分页列表；`PATCH /api/annotations/{annotation_id}` 接受 `is_resolved` 布尔值。
 
-- 支持未解决、已解决、全部状态和类型筛选，每页 20 条。
-- 点击“查看原消息”打开对应会话并定位批注所指向的消息。
-- 点击“标记已解决”或“重新打开”，更新 `annotation.is_resolved` 并记录审计，原始消息保持不变。
-- `GET /api/todos` 返回分页列表；`PATCH /api/annotations/{annotation_id}` 接受 `is_resolved` 布尔值，检查所属会话的用户范围。
-
-实现位置：`usability.py:todos`、`resolve_todo`，`static/usability.js:loadTodos`。
-
-![学习待办集中列表](screenshots-usability/03-learning-todos.png)
+![错题本里的一条疑问](screenshots-usability/03-error-book.png)
 
 ## 5. U04：排版阅读与代码复制
 
@@ -152,7 +145,7 @@ uv run --group dev python tests/additional_browser_check.py
 uv run --group dev python tests/usability_browser_check.py
 ```
 
-后端当前 **34/34 通过**：原 24 项加本轮 10 项，验证待办、卡片状态/进度保留、收藏与消息范围、完整备份往返、无效备份不改库、预览不提前写入、导入取消与恢复互斥、格式错误、数据库令牌绑定和 BOM/平台识别。
+这一轮新增的 10 项后端测试验证待办、卡片状态/进度保留、收藏与消息范围、完整备份往返、无效备份不改库、预览不提前写入、导入取消与恢复互斥、格式错误、数据库令牌绑定和 BOM/平台识别。
 
 三套真实 Edge 浏览器检查通过。新增检查验证七项功能、复制代码、两种公式、含脚本/图片输入的过滤，以及完整备份恢复前后的数量与旧库快照。页面 JavaScript 错误和外部页面请求均为 0。
 

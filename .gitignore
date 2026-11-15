@@ -20,3 +20,7 @@ staging/*
 *.db-shm
 *.db-wal
 *.db-journal
+!staging/generate_demo_corpus.py
+!staging/demo_corpus_raw.jsonl
+!staging/demo_corpus_rejected.jsonl
+!staging/demo_activity.jsonl

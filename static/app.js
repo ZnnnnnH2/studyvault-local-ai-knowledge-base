@@ -1,6 +1,6 @@
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
-const state = {view: 'library', selected: null, offset: 0, limit: 20, total: 0, items: [], cursor: -1,
+const state = {view: 'mistakes', selected: null, offset: 0, limit: 20, total: 0, items: [], cursor: -1,
   listSeq: 0, detailSeq: 0, summarySeq: 0, reviewSeq: 0, statsSeq: 0, loading: false,
   searchQuery: '', historySeq: 0, historyOffset: 0};
 
@@ -101,17 +101,19 @@ function updatePagination() {
   $('#next-page').disabled = state.loading || state.offset + state.limit >= state.total;
   $('#conversation-list').setAttribute('aria-busy', String(state.loading));
 }
+const VIEWS = {mistakes: '错题本', overview: '学习总览', library: '会话库', review: '复习队列', stats: '数据统计', ask: '问答查询', data: '导入与备份'};
 async function switchView(view) {
+  if (!VIEWS[view]) view = 'mistakes';  // e.g. a saved preference pointing at the retired 待办 view
   state.view = view;
   $$('.view').forEach(element => element.classList.toggle('hidden', element.id !== view));
   $$('.nav').forEach(element => element.classList.toggle('active', element.dataset.view === view));
-  $('#page-title').textContent = {overview: '学习总览', library: '会话库', review: '复习队列', stats: '数据统计', ask: '问答查询', todos: '学习待办', data: '导入与备份'}[view];
+  $('#page-title').textContent = VIEWS[view];
+  if (view === 'mistakes') await window.errorbook?.load();
   if (view === 'library') await loadConversations();
   if (view === 'review') await Promise.all([loadReviews(), loadReviewHistory(), window.usability?.loadCards()]);
   if (view === 'stats') await loadStats();
   if (view === 'ask') await window.askData?.load();
   if (view === 'overview') await loadSummary();
-  if (view === 'todos') await window.usability.loadTodos();
   window.usability?.savePreferences();
 }
 async function loadSummary() {
@@ -188,9 +190,12 @@ const POINT_STATUS = {PROPOSED: '待确认', CONFIRMED: '已确认', REJECTED: '
 function pointChip(point) {
   const status = point.status || 'CONFIRMED';
   const actions = status === 'PROPOSED' ? `<button class="text-button point-decision" type="button" data-point="${point.point_id}" data-status="CONFIRMED">确认</button><button class="text-button point-decision" type="button" data-point="${point.point_id}" data-status="REJECTED">拒绝</button>` : '';
-  return `<span class="point-chip ${status.toLowerCase()}">${escapeHtml(point.point_name)} · ${POINT_STATUS[status] || status}${actions}</span>`;
+  const origin = point.source === 'llm' ? 'AI 建议' : point.source === 'rule' ? '关键词' : '';
+  const title = point.evidence ? ` title="${escapeHtml((origin ? origin + '：' : '') + point.evidence.replace(/^\[|\]$/g, ''))}"` : '';
+  return `<span class="point-chip ${status.toLowerCase()}"${title}>${escapeHtml(point.point_name)} · ${status === 'PROPOSED' && origin ? origin + '，' : ''}${POINT_STATUS[status] || status}${actions}</span>`;
 }
 const TODO_TYPES = new Set(['QUESTION', 'CORRECTION', 'IMPORTANT']);
+const ANNOTATION_LABEL = {NOTE: '笔记', QUESTION: '疑问', CORRECTION: 'AI 答错', IMPORTANT: '重点'};
 function jsonList(value) { try { const result = JSON.parse(value || '[]'); return Array.isArray(result) ? result : []; } catch { return []; } }
 async function openConversation(id, focusMessageId = null) {
   const sequence = ++state.detailSeq;
@@ -204,7 +209,7 @@ async function openConversation(id, focusMessageId = null) {
     if (sequence !== state.detailSeq) return;
     const conversation = data.conversation, manual = data.manual_annotation;
     const manualHtml = manual ? `<div class="manual-review"><strong>会话深读标注</strong><p>${escapeHtml(manual.summary_manual)}</p><div class="meta">意图：${escapeHtml(manual.intent)} · 质量：${escapeHtml(manual.quality)} · 置信度：${escapeHtml(manual.confidence)}</div><p>主题：${jsonList(manual.topics_json).map(escapeHtml).join('、') || '无'}<br>关键点：${jsonList(manual.key_points_json).map(escapeHtml).join('；') || '无'}<br>未解决：${jsonList(manual.unresolved_questions_json).map(escapeHtml).join('；') || '无'}<br>待办：${jsonList(manual.action_items_json).map(escapeHtml).join('；') || '无'}</p></div>` : '';
-    $('#detail').innerHTML = `<div class="panel-head"><div><p class="eyebrow">${escapeHtml(conversation.platform_name)} · ${escapeHtml(conversation.course_name)}</p><h2>${escapeHtml(conversation.title)}</h2><p class="muted">原始会话 ID：${escapeHtml(conversation.source_conversation_id)}</p></div><span class="pill">${data.messages.length} 条消息</span></div>${manualHtml}<div class="detail-summary"><strong>结构化摘要</strong><p>${escapeHtml(conversation.summary || '暂无摘要')}</p></div><div class="meta detail-meta">知识点：${data.points.map(pointChip).join('') || '待归类'}　标签：${(data.tags || []).map(escapeHtml).join('、') || '暂无'}</div><div>${data.messages.map(message => `<section class="message ${message.speaker}" data-message-id="${message.message_id}"><div class="speaker">${message.speaker === 'user' ? '你' : 'AI'} · #${message.seq_no}</div><div class="message-content">${escapeHtml(message.content)}</div>${message.annotations.map(note => `<div class="annotation${note.is_resolved ? ' resolved' : ''}"><strong>${escapeHtml(note.annotation_type)}</strong> · ${escapeHtml(note.content)}${TODO_TYPES.has(note.annotation_type) ? ` <button class="small-button resolve-annotation" type="button" data-annotation="${note.annotation_id}" data-resolved="${note.is_resolved ? 1 : 0}" data-message="${message.message_id}">${note.is_resolved ? '重新打开' : '标记解决'}</button>` : ''}</div>`).join('')}<form class="annotation-form" data-message="${message.message_id}"><select aria-label="批注类型"><option value="NOTE">笔记</option><option value="QUESTION">疑问</option><option value="CORRECTION">纠错</option><option value="IMPORTANT">重点</option></select><input aria-label="批注内容" placeholder="为这条消息添加批注" required><button class="small-button" type="submit">保存批注</button></form><div class="review-entry">${message.review_card ? '<span class="pill added-review">已加入复习</span>' : `<button class="small-button add-review" type="button">加入复习</button><form class="review-form hidden" data-message="${message.message_id}"><label>复习问题<textarea name="question" required placeholder="你希望复习什么问题？"></textarea></label><label>参考答案<textarea name="answer" required>${escapeHtml(message.content)}</textarea></label><p class="muted">保存后立即加入待复习队列。</p><button class="button" type="submit">创建复习卡</button></form>`}</div></section>`).join('')}</div>`;
+    $('#detail').innerHTML = `<div class="panel-head"><div><p class="eyebrow">${escapeHtml(conversation.platform_name)} · ${escapeHtml(conversation.course_name)}</p><h2>${escapeHtml(conversation.title)}</h2><p class="muted">原始会话 ID：${escapeHtml(conversation.source_conversation_id)}</p></div><span class="pill">${data.messages.length} 条消息</span></div>${manualHtml}<div class="detail-summary"><strong>结构化摘要</strong><p>${escapeHtml(conversation.summary || '暂无摘要')}</p></div><div class="meta detail-meta">知识点：${data.points.map(pointChip).join('') || '待归类'}<button class="text-button suggest-points" type="button" title="会把标题、摘要和前几条消息发给配置的大模型；没配 key 时用关键词规则">AI 建议</button>　标签：${(data.tags || []).map(escapeHtml).join('、') || '暂无'}</div><div>${data.messages.map(message => `<section class="message ${message.speaker}" data-message-id="${message.message_id}"><div class="speaker">${message.speaker === 'user' ? '你' : 'AI'} · #${message.seq_no}</div><div class="message-content">${escapeHtml(message.content)}</div>${message.annotations.map(note => `<div class="annotation type-${note.annotation_type.toLowerCase()}${note.is_resolved ? ' resolved' : ''}"><strong>${ANNOTATION_LABEL[note.annotation_type] || escapeHtml(note.annotation_type)}</strong> · ${escapeHtml(note.content)}${TODO_TYPES.has(note.annotation_type) ? ` <button class="small-button resolve-annotation" type="button" data-annotation="${note.annotation_id}" data-resolved="${note.is_resolved ? 1 : 0}" data-message="${message.message_id}">${note.is_resolved ? '其实还没懂' : '弄懂了'}</button>` : ''}</div>`).join('')}<form class="annotation-form" data-message="${message.message_id}"><select aria-label="批注类型"><option value="NOTE">笔记</option><option value="QUESTION">疑问</option><option value="CORRECTION">AI 答错</option><option value="IMPORTANT">重点</option></select><input aria-label="批注内容" placeholder="没懂哪里、AI 哪里说错了，记一笔" required><button class="small-button" type="submit">保存批注</button></form><div class="review-entry">${message.review_card ? '<span class="pill added-review">已加入复习</span>' : `<button class="small-button add-review" type="button">加入复习</button><form class="review-form hidden" data-message="${message.message_id}"><label>复习问题<textarea name="question" required placeholder="你希望复习什么问题？"></textarea></label><label>参考答案<textarea name="answer" required>${escapeHtml(message.content)}</textarea></label><p class="muted">保存后立即加入待复习队列。</p><button class="button" type="submit">创建复习卡</button></form>`}</div></section>`).join('')}</div>`;
     $$('#detail .message-content').forEach(element => { StudyRender.render(element, element.textContent, state.searchQuery); });
     $('#detail .detail-summary').insertAdjacentHTML('afterend', `<details class="curation-editor"><summary>编辑整理信息</summary><form id="curation-form"><label>课程<select name="course_id">${state.courses.map(course => `<option value="${course.course_id}" ${course.course_id === conversation.course_id ? 'selected' : ''}>${escapeHtml(course.course_name)}</option>`).join('')}</select></label><label>摘要<textarea name="summary" required>${escapeHtml(conversation.summary || '')}</textarea></label><label>标签<input name="tags" value="${escapeHtml((data.tags || []).join('、'))}" placeholder="用逗号或顿号分隔；留空可清除标签"></label><button class="button" type="submit">保存整理</button></form></details><p class="curation-provenance muted">${data.curation ? `人工整理：${escapeHtml(data.curation.actor_name)} · ${escapeHtml(data.curation.created_at)} UTC` : '整理信息来源：导入规则或历史快照；可人工修订。'}</p>`);
     $('#curation-form').onsubmit = run(async event => {
@@ -232,6 +237,22 @@ async function openConversation(id, focusMessageId = null) {
         await loadSummary(); toast('批注已保存');
       } finally { button.disabled = false; }
     }));
+    $('#detail .suggest-points').onclick = run(async event => {
+      const button = event.currentTarget; button.disabled = true; button.textContent = '思考中…';
+      try {
+        const result = await post(`/api/conversations/${id}/suggest-points`);
+        if (result.course_suggestion) {
+          const target = result.course_suggestion;
+          if (confirm(`AI 觉得这段对话属于《${target.course_name}》，而不是《${conversation.course_name}》。\n理由：${result.points.map(p => p.evidence).filter(Boolean)[0] || '无'}\n\n要改过去吗？改完再点一次「AI 建议」就会建议这门课的知识点。`)) {
+            await api(`/api/conversations/${id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({course_id: target.course_id})});
+            await loadConversations();
+          }
+        } else {
+          toast(result.added ? `提出 ${result.added} 个知识点，等你确认（${result.source === 'llm' ? '大模型' : '关键词规则'}）` : '没有新的建议');
+        }
+        if (state.selected === String(id)) await openConversation(id);
+      } finally { button.disabled = false; button.textContent = 'AI 建议'; }
+    });
     $$('.point-decision').forEach(button => button.onclick = run(async () => {
       button.disabled = true;
       await post(`/api/conversations/${id}/points/${button.dataset.point}`, {status: button.dataset.status});
@@ -322,8 +343,9 @@ async function loadStats() {
   $('#course-stats').innerHTML = render(data.course, 'course_name');
   $('#source-stats').innerHTML = render(data.source, 'platform_name');
   $('#point-stats').innerHTML = render(data.points, 'point_name');
-  const gaps = (data.gaps || []).filter(item => item.priority > 0).slice(0, 8);
-  $('#gap-stats').innerHTML = gaps.length ? gaps.map(item => `<div class="gap-row"><div><strong>${escapeHtml(item.point_name)}</strong><small>${item.unresolved_count} 条未解决批注 · ${item.overdue_count} 张逾期复习卡 · ${item.wrong_count} 次答错</small></div><span class="pill">优先级 ${item.priority}</span></div>`).join('') : '<div class="empty-state">当前没有需要优先处理的知识漏洞。</div>';
+  const weeks = (await api('/api/mistakes/weekly?weeks=12')).filter((w, i, all) => w.noted || w.settled || w.reviews || all.slice(0, i).some(x => x.noted || x.settled || x.reviews));
+  if (sequence !== state.statsSeq) return;
+  $('#weekly-stats').innerHTML = weeks.length ? `<div class="table-scroll"><table class="weekly"><thead><tr><th>周（周一起）</th><th>新记下的错</th><th>弄懂的</th><th>复习次数</th><th>复习答对率</th></tr></thead><tbody>${weeks.map(w => `<tr><td>${escapeHtml(w.week_start.slice(5).replace('-', ' 月 '))} 日</td><td>${w.noted}</td><td>${w.settled}</td><td>${w.reviews}</td><td>${w.reviews ? Math.round(w.correct / w.reviews * 100) + '%' : '—'}</td></tr>`).join('')}</tbody></table></div><p class="muted">“错”指疑问和 AI 答错两类批注；弄懂按批注标记解决的那一周计。</p>` : '<div class="empty-state">还没有记过错，也没复习过。</div>';
   $('#review-stats').textContent = `累计复习 ${data.reviews.total} 次 · 答对 ${data.reviews.correct} 次 · 答错 ${data.reviews.wrong} 次`;
 }
 async function resetSearch() { state.offset = 0; clearDetail(); await loadConversations(); }
@@ -361,5 +383,5 @@ document.addEventListener('keydown', event => {
   }
 });
 // usability.js 依赖这个 Promise：初始化完成后才解锁导航、恢复偏好。
-const initialLoad = Promise.all([loadSummary(), loadFilters()]).then(() => switchView('library'));
+const initialLoad = Promise.all([loadSummary(), loadFilters()]).then(() => switchView('mistakes'));
 initialLoad.catch(showError);

@@ -1,7 +1,7 @@
 /* Additional local workflows; persistence lives in SQLite, not only this browser. */
 (() => {
   let initializing = true, restoring = false, preferenceTimer, progressTimer, activeReading = null, scrollIntent = 0;
-  let todoOffset = 0, cardOffset = 0, todoSeq = 0, cardSeq = 0, importToken, restoreToken;
+  let cardOffset = 0, cardSeq = 0, importToken, restoreToken;
   const patch = (url, payload) => api(url, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
   function preferenceValues() {
     return {view: state.view, q: $('#query').value, course_id: Number($('#course-filter').value) || null,
@@ -58,22 +58,6 @@
       }, 250);
     };
   }
-  async function loadTodos() {
-    const sequence = ++todoSeq;
-    const params = new URLSearchParams({status: $('#todo-status').value, limit: 20, offset: todoOffset});
-    if ($('#todo-type').value) params.set('annotation_type', $('#todo-type').value);
-    $('#todo-list').textContent = '正在加载待办…';
-    const data = await api(`/api/todos?${params}`);
-    if (sequence !== todoSeq) return;
-    $('#todo-list').innerHTML = data.items.length ? data.items.map(item => `<article class="todo-item"><span class="pill">${{QUESTION:'疑问',CORRECTION:'待纠错',IMPORTANT:'重点 / 待练习'}[item.annotation_type]}</span><h3>${escapeHtml(item.content)}</h3><p class="muted">${escapeHtml(item.course_name)} · ${escapeHtml(item.title)} · 消息 #${item.seq_no}</p><div class="review-actions"><button class="small-button todo-jump" data-cid="${item.conversation_id}" data-mid="${item.message_id}">查看原消息</button><button class="small-button todo-resolve" data-id="${item.annotation_id}" data-resolved="${item.is_resolved}">${item.is_resolved ? '重新打开' : '标记已解决'}</button></div></article>`).join('') : '<p class="empty-state">当前条件下没有学习待办。</p>';
-    $$('.todo-jump').forEach(button => button.onclick = run(() => jumpToMessage(button.dataset.cid, button.dataset.mid)));
-    $$('.todo-resolve').forEach(button => button.onclick = run(async () => {
-      button.disabled = true;
-      try { await patch(`/api/annotations/${button.dataset.id}`, {is_resolved: button.dataset.resolved !== '1'}); await Promise.all([loadTodos(), loadSummary()]); }
-      catch (error) { button.disabled = false; throw error; }
-    }));
-    pager('todos', data);
-  }
   function localDate(value) {
     if (!value) return '';
     const date = new Date(value.includes('T') ? value : value.replace(' ', 'T') + 'Z');
@@ -101,9 +85,6 @@
     return `<dl class="backup-counts">${Object.entries(counts).map(([key,value]) => `<div><dt>${names[key] || escapeHtml(key)}</dt><dd>${value}</dd></div>`).join('')}</dl>`;
   }
   $('#favorites-only').onchange = run(async () => { state.offset = 0; await loadConversations(); });
-  $('#todo-status').onchange = $('#todo-type').onchange = run(async () => { todoOffset = 0; await loadTodos(); });
-  $('#todos-previous').onclick = run(async () => { todoOffset = Math.max(0, todoOffset - 20); await loadTodos(); });
-  $('#todos-next').onclick = run(async () => { todoOffset += 20; await loadTodos(); });
   $('#card-status').onchange = run(async () => { cardOffset = 0; await loadCards(); });
   $('#cards-previous').onclick = run(async () => { cardOffset = Math.max(0, cardOffset - 20); await loadCards(); });
   $('#cards-next').onclick = run(async () => { cardOffset += 20; await loadCards(); });
@@ -141,7 +122,7 @@
     for (;;) {
       const task = await api(`/api/import/tasks/${taskId}`);
       const finished = ['completed','cancelled'].includes(task.status);
-      $('#import-progress').innerHTML = `<h3>${{queued:'正在等待',running:'正在导入',completed:'导入完成',cancelled:'已停止后续导入'}[task.status]}</h3><progress value="${task.processed}" max="${task.total}"></progress><p>已处理 ${task.processed} / ${task.total} · 新增 ${task.imported} · 跳过 ${task.skipped} · 失败 ${task.failed}</p><p class="muted">${escapeHtml(task.current_file)}</p>${!finished ? '<button id="cancel-import" class="small-button">停止后续文件</button>' : ''}<ul>${task.results.map(item => `<li>${escapeHtml(item.file_name)}：${{SUCCESS:'新增成功',SKIPPED:'重复，已跳过',FAILED:'失败'}[item.status]} ${escapeHtml(item.error || '')}</li>`).join('')}</ul>`;
+      $('#import-progress').innerHTML = `<h3>${{queued:'正在等待',running:'正在导入',completed:'导入完成',cancelled:'已停止后续导入'}[task.status]}</h3><progress value="${task.processed}" max="${task.total}"></progress><p>已处理 ${task.processed} / ${task.total} · 新增 ${task.imported} · 跳过 ${task.skipped} · 失败 ${task.failed}</p><p class="muted">${escapeHtml(task.current_file)}</p>${!finished ? '<button id="cancel-import" class="small-button">停止后续文件</button>' : ''}<ul>${task.results.map(item => `<li>${escapeHtml(item.title || item.file_name)}：${{SUCCESS:'新增成功',SKIPPED:'重复，已跳过',FAILED:'失败'}[item.status]} ${escapeHtml(item.error || '')}</li>`).join('')}</ul>`;
       if (!finished) $('#cancel-import').onclick = run(async () => { await post(`/api/import/tasks/${taskId}/cancel`); $('#cancel-import').disabled = true; $('#cancel-import').textContent = '当前文件完成后停止'; });
       if (finished) { sessionStorage.removeItem('studyvault-import-task'); await loadSummary(); toast('导入结果已更新'); break; }
       await new Promise(resolve => setTimeout(resolve, 350));
@@ -176,7 +157,7 @@
     navigator.sendBeacon('/api/preferences', new Blob([JSON.stringify(preferenceValues())], {type:'application/json'}));
     if (activeReading) navigator.sendBeacon('/api/library/progress', new Blob([JSON.stringify(activeReading)], {type:'application/json'}));
   });
-  window.usability = {loadTodos, loadCards, loadRecent, trackConversation, savePreferences};
+  window.usability = {loadCards, loadRecent, trackConversation, savePreferences};
   $$('[data-view]').forEach(button => button.disabled = true);
   initialLoad.then(async () => {
     const preferences = await api('/api/preferences');
@@ -186,7 +167,7 @@
       $('#source-filter').value = preferences.source_id || '';
       $('#favorites-only').checked = Boolean(preferences.favorites_only);
       state.offset = Number.isInteger(preferences.offset) ? Math.max(0, preferences.offset) : 0;
-      await switchView(preferences.view || 'overview');
+      await switchView(preferences.view || 'mistakes');
       if (preferences.view === 'library' && preferences.conversation_id) await openConversation(preferences.conversation_id);
     }
     await loadRecent();

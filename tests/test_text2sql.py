@@ -66,6 +66,20 @@ class DatabaseText2SQLTest(unittest.TestCase):
         self.assertEqual(len(result['rows']), 5)
         self.assertTrue(result['truncated'])
 
+    # The first row comes back at once, so execute() succeeds; the second never arrives,
+    # so the step cap fires while rows are being fetched.
+    LAZY_RUNAWAY = ('WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t) '
+                    'SELECT n FROM t WHERE n = 1 OR n < 0')
+
+    def test_step_cap_while_fetching_is_a_clean_error(self):
+        with self.assertRaisesRegex(ValueError, '中止'):
+            text2sql.run_readonly(app.DB_PATH, self.LAZY_RUNAWAY)
+
+    def test_vote_skips_candidate_that_hits_step_cap(self):
+        voted = text2sql.vote_candidates([self.LAZY_RUNAWAY, 'SELECT COUNT(*) FROM course'], app.DB_PATH)
+        self.assertEqual(voted['sql'], 'SELECT COUNT(*) FROM course')
+        self.assertEqual(voted['valid'], 1)
+
     def test_schema_endpoint_reports_offline(self):
         response = self.client.get('/api/text2sql/schema')
         self.assertEqual(response.status_code, 200)
@@ -97,7 +111,13 @@ class DatabaseText2SQLTest(unittest.TestCase):
         self.assertIn('annotation_type', text2sql.SCHEMA_PROMPT)
         self.assertIn('review_count', text2sql.SCHEMA_PROMPT)
         self.assertNotIn('note_type', text2sql.SCHEMA_PROMPT)
-        self.assertNotIn('streak', text2sql.SCHEMA_PROMPT)
+        # Every column the model is told about must exist in schema.sql (e.g. no review_card.streak).
+        import sqlite3
+        with sqlite3.connect(':memory:') as db:
+            db.executescript(app.SCHEMA)
+            for table, (columns, _) in text2sql.STRUCTURED_SCHEMA.items():
+                real = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+                self.assertLessEqual(set(columns), real, table)
 
     def test_result_signature_ignores_row_and_column_order(self):
         a = {'columns': ['x', 'y'], 'rows': [[1, 'a'], [2, 'b']]}

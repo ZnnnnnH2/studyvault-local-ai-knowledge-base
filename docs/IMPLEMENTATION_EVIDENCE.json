@@ -19,35 +19,45 @@
     "statistics view"
   ],
   "restore": {
-    "inserted": 25,
+    "inserted": 90,
     "skipped": 0,
-    "messages_added": 50,
-    "summaries_added": 25,
-    "annotations_added": 25,
-    "tag_links_added": 50,
-    "point_links_added": 25,
+    "messages_added": 559,
+    "summaries_added": 90,
+    "annotations_added": 90,
+    "tag_links_added": 270,
+    "point_links_added": 84,
     "integrity_check": "ok",
     "foreign_key_violations": 0,
     "counts": {
-      "conversation": 25,
-      "message": 50,
-      "conversation_annotation": 25,
-      "conversation_tag": 50,
-      "conversation_point": 25
+      "conversation": 90,
+      "message": 559,
+      "conversation_annotation": 90,
+      "conversation_tag": 270,
+      "conversation_point": 84
     }
+  },
+  "activity": {
+    "annotations": 97,
+    "review_cards": 55,
+    "review_logs": 353,
+    "favorites": 18,
+    "reading_states": 68,
+    "confirmed_points": 59,
+    "shift_days": 1
   },
   "report": {
     "screenshots": [
-      "01-overview.png",
-      "02-pagination.png",
-      "03-search-detail.png",
-      "04-annotation.png",
-      "05-create-review.png",
-      "06-due-review.png",
-      "07-review-completed.png",
-      "08-statistics-export.png"
+      "01-error-book.png",
+      "02-error-book-ai-mistakes.png",
+      "03-source-message.png",
+      "04-new-doubt.png",
+      "05-review.png",
+      "06-library.png",
+      "07-statistics.png",
+      "08-text2sql.png",
+      "09-chatgpt-import.png"
     ],
-    "dataset": "synthetic demo fixtures",
-    "demonstration_note": "All data is synthetic; only the annotation and review card were added for the demonstration."
+    "dataset": "app.py --demo in a temporary database (synthetic conversations + simulated semester)",
+    "demonstration_note": "All data is synthetic. One doubt was added during capture; the ChatGPT import was previewed, not imported."
   }
 }

@@ -53,6 +53,9 @@ async def regression(browser, base_url: str) -> dict:
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.on('request', lambda request: requests.append(request.url) if '/api/conversations' in request.url else None)
     await page.goto(base_url)
+    await page.wait_for_function("window.studyReady === true")
+    await expect(page.locator('#page-title')).to_have_text('错题本')
+    await page.locator('.nav[data-view="overview"]').click()
     await expect(page.locator('[data-count="conversations"] .value')).to_have_text('25')
     await page.locator('.nav[data-view="library"]').click()
     await expect(page.locator('.conversation-item')).to_have_count(20)
@@ -183,57 +186,65 @@ async def regression(browser, base_url: str) -> dict:
 
 
 async def capture_report(browser, base_url: str) -> dict:
+    """Screenshots for the report, on the demo semester (app.py --demo) in a temporary database."""
     output = BASE / 'docs' / 'screenshots'
     output.mkdir(parents=True, exist_ok=True)
+    for old in output.glob('*.png'):
+        old.unlink()
     page = await browser.new_page(viewport={'width': 1440, 'height': 1050}, device_scale_factor=1)
-    async def screenshot(name):
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    async def screenshot(name, full=False):
         await expect(page.locator('.toast.show')).to_have_count(0)
-        await page.screenshot(path=str(output / name))
-    with app.connect() as db:
-        total = db.execute('SELECT COUNT(*) FROM conversation').fetchone()[0]
-    pages = max(1, (total + 19) // 20)
+        await page.screenshot(path=str(output / name), full_page=full)
     await page.goto(base_url)
-    await expect(page.locator('[data-count="conversations"] .value')).to_have_text(str(total))
-    await screenshot('01-overview.png')
+    await page.wait_for_function("window.studyReady === true")
+    await expect(page.locator('.eb-group').first).to_be_visible()
+    await screenshot('01-error-book.png')
+    await page.locator('#eb-kind label:has-text("AI 答错")').click()
+    await expect(page.locator('.eb-item.kind-correction').first).to_be_visible()
+    await screenshot('02-error-book-ai-mistakes.png')
+    # Follow an AI mistake back to the exact message it was written on.
+    await page.locator('.eb-item.kind-correction .eb-source').first.click()
+    await expect(page.locator('.message.search-hit')).to_be_visible()
+    await page.locator('.message.search-hit .annotation.type-correction').first.scroll_into_view_if_needed()
+    await screenshot('03-source-message.png')
+    message = page.locator('.message.user').first
+    await message.locator('.annotation-form select').select_option('QUESTION')
+    await message.locator('.annotation-form input').fill('换成多对多的例子，这个结论还成立吗？')
+    await message.locator('.annotation-form button').click()
+    await expect(message.locator('.annotation.type-question')).to_have_count(1)
+    await message.locator('.annotation.type-question').scroll_into_view_if_needed()
+    await screenshot('04-new-doubt.png')
+    await page.locator('.nav[data-view="review"]').click()
+    await expect(page.locator('.review-card').first).to_be_visible()
+    await page.locator('.reveal-answer').first.click()
+    await screenshot('05-review.png')
     await page.locator('.nav[data-view="library"]').click()
     await expect(page.locator('#conversation-list[aria-busy="false"]')).to_be_visible()
-    if pages > 1:
-        await page.locator('#next-page').click()
-        await expect(page.locator('#page-info')).to_contain_text(f'第 2 / {pages} 页')
-    await screenshot('02-pagination.png')
-    await page.locator('#query').fill('外键')
-    await page.locator('#search-button').click()
-    await expect(page.locator('#conversation-list[aria-busy="false"]')).to_be_visible()
-    await page.locator('.conversation-item').first.click()
-    await expect(page.locator('.message').first).to_be_visible()
-    await screenshot('03-search-detail.png')
-    message = page.locator('.message').first
-    await message.locator('.annotation-form input').fill('重点：外键维护参照完整性，子表引用的值必须在父表真实存在或为 NULL。')
-    await message.locator('.annotation-form select').select_option('IMPORTANT')
-    await message.locator('.annotation-form button').click()
-    await expect(page.locator('.annotation')).to_have_count(1)
-    await message.locator('.annotation').scroll_into_view_if_needed()
-    await screenshot('04-annotation.png')
-    await message.locator('.add-review').click()
-    await message.locator('[name="question"]').fill('外键约束保证了什么？')
-    await message.locator('[name="answer"]').fill('参照完整性：子表引用的值必须在父表真实存在或为 NULL。')
-    await message.locator('.review-form').scroll_into_view_if_needed()
-    await screenshot('05-create-review.png')
-    await message.locator('.review-form button').click()
-    await expect(message.locator('.added-review')).to_be_visible()
-    await page.locator('.nav[data-view="review"]').click()
-    await expect(page.locator('.review-card')).to_have_count(1)
-    await screenshot('06-due-review.png')
-    await page.locator('.reveal-answer').first.click()
-    await page.locator('[data-grade="correct"]').click()
-    await expect(page.locator('#review-list')).to_contain_text('今天没卡要复习')
-    await screenshot('07-review-completed.png')
+    await expect(page.locator('#page-info')).to_contain_text('第 1 /')
+    await screenshot('06-library.png')
     await page.locator('.nav[data-view="stats"]').click()
     await expect(page.locator('#course-stats .stat-row').first).to_be_visible()
-    await screenshot('08-statistics-export.png')
+    await screenshot('07-statistics.png')
+    await page.locator('.nav[data-view="ask"]').click()
+    await expect(page.locator('#t2s-mode')).not_to_have_text('检测中…')
+    await page.locator('#t2s-question').fill('哪门课我还没弄懂的疑问最多？')
+    await page.locator('#t2s-form button').click()
+    await expect(page.locator('#t2s-result table, #t2s-result .empty-state, #app-status:not(:empty)').first).to_be_visible(timeout=90000)
+    await screenshot('08-text2sql.png')
+    await page.locator('.nav[data-view="data"]').click()
+    from test_chatgpt_export import export_fixture
+    export = Path(tempfile.mkdtemp(prefix='studyvault-export-')) / 'conversations.json'
+    export.write_text(json.dumps(export_fixture(), ensure_ascii=False), encoding='utf-8')
+    await page.locator('#import-files').set_input_files(str(export))
+    await page.locator('#import-form button').click()
+    await expect(page.locator('#import-preview table')).to_be_visible()
+    await screenshot('09-chatgpt-import.png')
+    assert errors == [], errors
     result = {'screenshots': sorted(p.name for p in output.glob('*.png')),
-              'dataset': 'synthetic demo fixtures',
-              'demonstration_note': 'All data is synthetic; only the annotation and review card were added for the demonstration.'}
+              'dataset': 'app.py --demo in a temporary database (synthetic conversations + simulated semester)',
+              'demonstration_note': 'All data is synthetic. One doubt was added during capture; the ChatGPT import was previewed, not imported.'}
     await page.close()
     return result
 
@@ -252,8 +263,9 @@ async def main(capture: bool):
                     with serve(app.DB_PATH) as base_url:
                         evidence = await regression(browser, base_url)
                     if capture:
-                        app.DB_PATH = root / 'restored.db'
-                        evidence['restore'] = app.restore_bundled(*write_bundle(root / 'report-fixtures', 25))
+                        app.DB_PATH = root / 'demo.db'
+                        evidence['restore'] = app.restore_bundled()
+                        evidence['activity'] = app.seed_demo_activity()
                         with serve(app.DB_PATH) as base_url:
                             evidence['report'] = await capture_report(browser, base_url)
                         (BASE / 'docs' / 'IMPLEMENTATION_EVIDENCE.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

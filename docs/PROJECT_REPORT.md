@@ -1,34 +1,54 @@
-# StudyVault：个人学习空间项目报告
+# StudyVault：AI 对话错题本 项目报告
 
-## 1. 应用场景、需求和证据口径
+StudyVault 把学生和 AI 的学习对话导入 SQLite，把对话里没弄懂的疑问、AI 答错的地方和复习时答错的卡收成一本按知识点排序的错题本。在仓库附带的 90 段合成对话和一学期模拟学习记录上，错题本列出 42 个还没掌握的错，分在 17 个知识点下，另有 50 个已经攻克。
 
-学生通过不同 Agent 工具理解知识点、处理课程作业和辅助编程，对话按工具与时间分散保存。StudyVault 将可读取的会话正文导入 SQLite，以会话为整理单位关联课程、标签和知识点，在消息级保存批注，再把需要巩固的内容变成复习卡。
+1. 数据库共 18 张表，原始消息和学习记录分表保存。错题本没有新建表，它是在批注、复习卡、复习日志和知识点关联四张表上的一组查询，每次打开页面实时算出。
+2. 复习调度改用 SM-2：答错一次，这张卡的难度系数降 0.2，以后的间隔也随之变短。演示学期里 37 张答错过的卡平均难度系数为 1.97，从没答错过的 18 张卡保持 2.5。
+3. 在 40 道 Text2SQL 题上，我们复现的 C3 方法三次运行对 35 到 36 道，直接生成 SQL 的基线对 36 到 38 道。C3 多错的都是需要多表连接的学习者题，原因是它只给模型相关表的结构，召回时漏掉了连接要经过的表和主键列，模型只好臆造列名或绕路连接。
 
-用户为单个本地学习者。完整使用流程为“恢复/导入 → 分类检索 → 阅读上下文 → 添加批注 → 创建并完成复习 → 统计与导出”。本项目使用固定演示用户，角色表是预留关系数据，不代表实现了登录或多角色权限。
+## 背景
 
-本报告区分三类证据：
+### 为什么做成错题本
 
-- **本机真实语料（不随仓库公开）**：系统在作者本机的 754 个真实会话、37,610 条消息（跨 Codex、Claude Code、Pi、DeepSeek、Gemini CLI 五种工具）上开发与验证。这些对话含个人信息，按 [DATA_POLICY.md](../DATA_POLICY.md) **只保存在本机、不提交版本库**；下文的 754/37,610 等数字用于说明真实语料规模，不是仓库附带内容。
-- **仓库附带的合成演示快照**：为便于在其他机器复现，仓库提供一份**人工编写、不含真实对话**的合成快照（14 个学习问答、56 条消息）。`--restore-bundled` 从空库恢复的就是这份合成数据。原快照未保存课程字段，因此课程归属由现有规则重新推断。
-- **本轮实测**：临时数据库中的 API 和真实浏览器检查，以及从合成演示夹具拍摄的页面截图。截图演示新增一条消息重点批注和一张复习卡，未改写原始问答。
+作业的参考选题是“个人学习空间”：学生借助大模型理解知识点和写代码，问答散在不同平台，难以整理和复查。作者本机 5 种 AI 工具里共有 754 段对话、37,610 条消息，按 [DATA_POLICY.md](../DATA_POLICY.md) 只留在本地，系统最初就是在这批数据上开发的。整理这批对话时我们发现，值得回头看的内容集中在少数几种地方：自己追问了好几轮还没懂的概念，AI 说错、被自己指出来的结论，以及后来复习时又答错的题。把全部对话都当作“资料”整理，重要的部分会淹没在大量顺利的问答里。
 
-作业依据为老师 PPT 的参考选题 2（第 12—20 页）。Text2SQL 为参考方向；本轮不扩展视频、汇报 PPT、Text2SQL 或本机会话增量同步。
+所以 StudyVault 的组织单位是“错”。系统里的错有三种：
 
-## 2. 数据库设计
+- 疑问：学生在某条消息下记下的没弄懂的地方，对应批注类型 `QUESTION`。标为“弄懂了”之前一直算没掌握。
+- AI 答错：AI 的某条回答有误，学生指出后写下的纠错，对应批注类型 `CORRECTION`。标为已核对之前一直算没掌握。
+- 常错卡：复习时至少答错过一次的复习卡。连续答对 3 次，或被手动标为完成，才算攻克。
 
-### 2.1 E-R 图
+每个错挂在它所在消息的会话上，会话再通过知识点关联归到知识点。错题本按知识点分组，组的优先级是疑问 ×3、AI 答错 ×2、不稳的卡 ×2，再加逾期的卡 ×1。疑问权重最高，因为它是学生自己承认还不会的东西。AI 答错的权重低一档，因为多数情况下学生指出错误时已经知道了正确答案。
 
-下图的 `o|` 表示可选的至多一条记录，`o{` 表示零到多条。一个会话可以没有深读标注；知识点也可以没有父节点。
+### 一个错从记下到攻克
+
+演示数据里有一段《WHERE 和 HAVING 执行顺序讨论》的对话。学生问 WHERE 和 HAVING 的区别，AI 在第 2 条回答里说“HAVING 在 GROUP BY 之前执行，所以它是先筛选再分组”。学生在第 3 条举出带聚合函数的 HAVING 反驳，AI 随后改正。学生在第 2 条消息下记了一条 AI 答错：“错误：HAVING 在 GROUP BY 之前执行。正确：HAVING 在 GROUP BY 之后执行，用于对分组后的结果进行筛选，因此可以使用聚合函数。”，又从第 4 条改正后的回答出了一张复习卡“简述 SQL 查询中 WHERE 和 HAVING 的区别及逻辑执行顺序。”。这张卡在演示学期里复习了 18 次，答错 8 次。每答错一次，难度系数降 0.2，第 6 次答错时降到下限 1.3，此后答错一次间隔回到 1 天，答对一次也只延到 3 到 5 天。学期最后三次复习连续答对，按规则算作攻克。这条纠错也已标为核对过，所以错题本默认的“没掌握”视图里没有它们，切到“已攻克”可以在“SQL 与查询”组里找到，点来源就能跳回第 2 条消息。
+
+### 演示数据怎么来的
+
+仓库不能附带真实对话，因为真实对话里有账号、密码和个人信息。演示数据由 `staging/generate_demo_corpus.py` 生成，分三步：
+
+1. 人手写课程大纲：4 门课、19 个知识点、90 个话题。每个话题标了场景，22 个“AI 答错”话题还写明 AI 要说错的那一句，比如上面的 HAVING 执行顺序。
+2. DeepSeek（`deepseek-chat`）按话题和场景写出对话，同时建议在哪条消息下记疑问或纠错、出什么复习题。
+3. 推理模型（`deepseek-reasoner`）逐段核查 AI 的每条回答，除了故意安排的那一句，其他错误都要找出来。被找出问题的对话交给推理模型按问题修改，再核查一遍。90 段对话里有 27 段被找出过计划之外的错误，共 51 处，例如 Adam 偏差修正前后步长大小的估计说反了，Clock 置换算法扫描后把已清零的访问位仍写成 1。修改后的对话重新核查，最后 90 段全部通过。核查记录保存在 `staging/demo_corpus_rejected.jsonl`。
+
+之后由固定随机种子的程序把对话排进 2026 年 9 月到 11 月，模拟哪些疑问后来弄懂了、哪些卡什么时候复习、答对还是答错。复习结果交给真实的调度函数重放，所以每张卡的状态都和它的复习日志一致。`python app.py --demo` 恢复对话并补上这些学习记录，整体时间平移到运行当天，复习队列里就有当天到期的卡。
+
+## 一、数据库设计
+
+### 1.1 E-R 图
+
+下图 `o|` 表示至多一条，`o{` 表示零到多条。
 
 ```mermaid
 erDiagram
   APP_ROLE ||--o{ APP_USER : assigns
-  APP_USER ||--o{ IMPORT_JOB : starts
   APP_USER ||--o{ CONVERSATION : owns
   APP_USER ||--o{ TAG : owns
   APP_USER ||--o{ ANNOTATION : writes
   APP_USER ||--o{ REVIEW_CARD : reviews
   APP_USER ||--o{ AUDIT_LOG : performs
+  APP_USER ||--o{ IMPORT_JOB : starts
   COURSE ||--o{ CONVERSATION : contains
   COURSE ||--o{ KNOWLEDGE_POINT : organizes
   KNOWLEDGE_POINT o|--o{ KNOWLEDGE_POINT : parent_of
@@ -36,396 +56,395 @@ erDiagram
   CONVERSATION_SOURCE ||--o{ CONVERSATION : comes_from
   IMPORT_JOB ||--o{ CONVERSATION : creates
   CONVERSATION ||--o{ MESSAGE : contains
-  CONVERSATION ||--o| CONVERSATION_ANNOTATION : reviewed
+  CONVERSATION ||--o| CONVERSATION_ANNOTATION : summarized_by
   CONVERSATION ||--o{ CONVERSATION_TAG : labels
   TAG ||--o{ CONVERSATION_TAG : used_by
   CONVERSATION ||--o{ CONVERSATION_POINT : covers
   KNOWLEDGE_POINT ||--o{ CONVERSATION_POINT : relates
   MESSAGE ||--o{ ANNOTATION : receives
-  MESSAGE ||--o{ REVIEW_CARD : becomes
+  MESSAGE ||--o| REVIEW_CARD : becomes
   REVIEW_CARD ||--o{ REVIEW_LOG : records
   APP_USER ||--o{ CONVERSATION_STATE : saves
-  CONVERSATION ||--o{ CONVERSATION_STATE : reading
-  MESSAGE o|--o{ CONVERSATION_STATE : last_read
+  CONVERSATION ||--o{ CONVERSATION_STATE : read_as
   APP_USER ||--o| USER_PREFERENCE : configures
 
-  CONVERSATION {
-    INTEGER conversation_id PK
-    INTEGER owner_id FK
-    INTEGER course_id FK
-    INTEGER source_id FK
-    INTEGER import_job_id FK
-    TEXT source_conversation_id
-    TEXT title
-    TEXT summary
-  }
-  MESSAGE {
-    INTEGER message_id PK
-    INTEGER conversation_id FK
-    INTEGER seq_no
-    TEXT speaker
-    TEXT content
-    TEXT created_at
-  }
   ANNOTATION {
     INTEGER annotation_id PK
     INTEGER message_id FK
-    INTEGER author_id FK
-    TEXT annotation_type
-    TEXT content
+    TEXT annotation_type "NOTE/QUESTION/CORRECTION/IMPORTANT"
+    INTEGER is_resolved
   }
   REVIEW_CARD {
     INTEGER review_card_id PK
     INTEGER message_id FK
-    INTEGER owner_id FK
-    TEXT question
-    TEXT answer
+    INTEGER review_count "当前连续答对"
+    INTEGER lapse_count "累计答错"
+    REAL ease_factor "SM-2 难度系数"
     TEXT due_at
-    INTEGER review_count
+  }
+  CONVERSATION_POINT {
+    INTEGER conversation_id PK
+    INTEGER point_id PK
+    TEXT status "PROPOSED/CONFIRMED/REJECTED"
+    TEXT source "rule/llm/bundled/manual"
+    TEXT evidence
   }
 ```
 
-### 2.2 关系模式与数据字典
+一个用户对同一条消息只能有一张复习卡（`UNIQUE(owner_id, message_id)`），图中按演示账户画成至多一张。
 
-基础 15 张表及附加的复习日志、阅读状态、偏好表的完整 DDL 见 [schema.sql](../schema.sql)。当前共 18 张表；`app.py:SCHEMA` 直接读取该文件，`init_db()` 执行同一份定义。
+### 1.2 关系模式
 
-| 表 | 字段 | 主键、外键和主要约束 |
+完整 DDL 在 [schema.sql](../schema.sql)，`app.py` 启动时执行这一份文件，没有第二份建表定义。下表列出主要字段和约束。
+
+| 表 | 主要字段 | 主键、外键和约束 |
 | --- | --- | --- |
-| `app_role` | role_id、role_code、role_name | PK role_id；role_code 唯一。 |
-| `app_user` | user_id、role_id、username、display_name、status、created_at | PK user_id；FK role_id → app_role；username 唯一；status 限 ACTIVE/DISABLED。 |
-| `course` | course_id、course_code、course_name、term、instructor_name、description、status、created_at | PK course_id；course_code 唯一；status 限 ACTIVE/ARCHIVED。 |
-| `knowledge_point` | point_id、course_id、parent_id、point_name、description、level_no | PK point_id；FK course_id → course、parent_id → 本表；UNIQUE(course_id,point_name)；level_no > 0。 |
-| `conversation_source` | source_id、platform_name、source_type、source_path | PK source_id；UNIQUE(platform_name,source_type)。 |
-| `import_job` | import_job_id、owner_id、source_id、file_name、source_conversation_id、status、total_messages、error_message、created_at | PK import_job_id；FK owner_id/source_id；UNIQUE(owner_id,source_id,file_name,source_conversation_id)；状态限 SUCCESS/SKIPPED/FAILED。 |
-| `conversation` | conversation_id、owner_id、course_id、source_id、import_job_id、source_conversation_id、title、summary、visibility、started_at、updated_at | PK conversation_id；四个 FK 指向用户/课程/来源/导入；UNIQUE(owner_id,source_id,source_conversation_id)；visibility 限 PRIVATE/SHARED。 |
-| `message` | message_id、conversation_id、seq_no、speaker、content、created_at | PK message_id；FK conversation_id；UNIQUE(conversation_id,seq_no)；speaker 限 user/assistant/system。 |
-| `tag` | tag_id、owner_id、tag_name | PK tag_id；FK owner_id；UNIQUE(owner_id,tag_name)。 |
-| `conversation_tag` | conversation_id、tag_id | 复合 PK；两个 FK，表达会话与标签的多对多关系。 |
-| `conversation_point` | conversation_id、point_id、confidence、source | 复合 PK；两个 FK；confidence 在 [0,1] 内。 |
-| `conversation_annotation` | annotation_id、conversation_id、summary_manual、intent、topics_json、key_points_json、unresolved_questions_json、action_items_json、quality、confidence、created_at、updated_at | PK annotation_id；FK conversation_id 且唯一；quality 限有效/混合/低价值，confidence 限 high/medium/low。 |
-| `annotation` | annotation_id、message_id、author_id、annotation_type、content、is_resolved、created_at、updated_at | PK annotation_id；FK message_id/author_id；类型限 NOTE/QUESTION/CORRECTION/IMPORTANT；is_resolved 为 0/1。 |
-| `review_card` | review_card_id、message_id、owner_id、question、answer、due_at、interval_days、review_count、status、last_reviewed_at | PK review_card_id；FK message_id/owner_id；UNIQUE(owner_id,message_id)；状态限 ACTIVE/SUSPENDED/COMPLETED。 |
-| `audit_log` | audit_id、actor_id、operation、table_name、record_id、before_data、after_data、created_at | PK audit_id；FK actor_id；保存导入、恢复和批注操作的审计数据。 |
-| `review_log` | review_log_id、review_card_id、reviewed_at、grade、interval_before、interval_after、streak_before、streak_after、due_before、due_after | PK review_log_id；FK review_card_id → review_card；grade 限 correct/wrong；逐次保留复习前后状态。 |
-| `conversation_state` | owner_id、conversation_id、is_favorite、last_message_id、last_opened_at | 复合 PK owner_id/conversation_id；FK 到用户/会话/消息；保存收藏与阅读进度。 |
-| `user_preference` | user_id、library_state | PK/FK user_id → app_user；保存筛选、页码、会话及上次视图。 |
+| `course` | course_id, course_code, course_name | PK course_id，course_code 唯一 |
+| `knowledge_point` | point_id, course_id, parent_id, point_name | FK course_id、parent_id（自引用），UNIQUE(course_id, point_name) |
+| `conversation_source` | source_id, platform_name, source_type | UNIQUE(platform_name, source_type)，ChatGPT 的 source_type 为 web_export |
+| `import_job` | import_job_id, owner_id, source_id, file_name, source_conversation_id, status, result_code | 状态和结果码用 CHECK 限定取值 |
+| `conversation` | conversation_id, owner_id, course_id, source_id, import_job_id, source_conversation_id, title, summary, started_at | 四个 FK，UNIQUE(owner_id, source_id, source_conversation_id) 用来查重 |
+| `message` | message_id, conversation_id, seq_no, speaker, content, created_at | UNIQUE(conversation_id, seq_no)，speaker 限 user/assistant/system |
+| `tag`、`conversation_tag` | tag_id, tag_name | 标签按用户唯一，会话与标签多对多 |
+| `conversation_point` | conversation_id, point_id, status, source, evidence, confirmed_by | 复合主键，status 限 PROPOSED/CONFIRMED/REJECTED |
+| `conversation_annotation` | conversation_id, summary_manual, intent, topics_json 等 | 每个会话至多一条会话级标注 |
+| `annotation` | annotation_id, message_id, author_id, annotation_type, content, is_resolved | 类型限四种，is_resolved 限 0/1 |
+| `review_card` | review_card_id, message_id, owner_id, question, answer, due_at, interval_days, review_count, lapse_count, ease_factor, status | UNIQUE(owner_id, message_id)，ease_factor ≥ 1.3，lapse_count ≥ 0 |
+| `review_log` | review_log_id, review_card_id, reviewed_at, grade, 复习前后的间隔、连续答对、到期时间和难度系数 | grade 限 correct/wrong |
+| `conversation_state` | owner_id, conversation_id, is_favorite, last_message_id | 收藏和阅读位置 |
+| `user_preference`、`audit_log`、`app_user`、`app_role` | | 界面设置、操作审计、固定演示账户 |
 
-会话删除时，其消息、关联表和会话标注级联删除；消息删除时批注和复习卡级联删除。课程及知识点父节点使用 RESTRICT，避免误删被引用实体。每次连接都启用 SQLite 外键检查，恢复事务内还执行完整性检查。
+删除会话时，消息、关联和会话级标注级联删除。删除消息时，它的批注和复习卡级联删除。课程和知识点父节点用 RESTRICT，被引用时不能删。每次连接都打开 SQLite 外键检查，批量恢复结束前再跑 `PRAGMA integrity_check` 和 `PRAGMA foreign_key_check`，有问题整批回滚。`message_fts` 是 FTS5 全文索引，靠三个触发器和 `message` 表同步。
 
-索引覆盖课程/更新时间、消息会话/序号、复习到期状态和消息批注。关键词检索当前使用 `LIKE`，不是全文检索引擎；本轮约 3.8 万条消息的运行结果不能外推为大规模数据性能结论。
+### 1.3 设计上的几个取舍
 
-### 2.3 设计理由和边界
+课程和知识点挂在会话上，不挂在消息上。老师的参考图把课程关联到消息，我们把一段完整的问答当作一个学习单元，因为一条消息脱离上下文往往看不懂。错题本里的每个错仍然精确到消息，所以从错能跳回原话。
 
-课程、来源、会话、消息、标签、批注分别建表，避免重复存储课程名称和平台名称。标签、知识点通过中间表表达多对多关系，批注不覆盖原始消息。深读标注中的列表以 JSON 保存，方便保留历史标注格式；可检索的正式标签和知识点仍在独立关系表中。
+`conversation_point` 带状态和来源。导入时的关键词规则、AI 建议和附带快照都只写 `PROPOSED`，学生确认后才变 `CONFIRMED`，拒绝的关系保留为 `REJECTED`，以后再建议也不会覆盖。错题本给每个会话选一个主知识点时，先取已确认的，再取待确认的，不用被拒绝的。
 
-本项目将课程与标签关联到会话，而老师参考图关联到消息，这是自行设计的粒度选择：一个完整问答上下文被视为一个学习资料单元。当前一个会话只有一门课程，跨课程会话依靠标签/知识点补充表达；附加功能现已支持人工改课、摘要和标签修订，多课程归属仍未实现。现有关键词规则可能把数学学习中的 Markdown 编辑归入程序设计，原 8 张截图保留的是整改基础阶段的实际分类；新增人工整理界面见附加功能文档。
+`review_card` 同时存当前连续答对次数 `review_count` 和累计答错次数 `lapse_count`。前者决定下一次间隔，后者决定这张卡算不算常错卡。两者都能从 `review_log` 重算，测试逐张卡核对了这一点。旧数据库升级时，`lapse_count` 由已有日志里答错的次数回填。
 
-`review_count` 沿用既有算法，表示连续答对次数：答错归零，不是累计复习次数。页面已相应改为“连续答对”。
+## 二、聊天记录导入与存储
 
-## 3. 数据来源与完整恢复
+系统支持六种来源。五种 Agent 工具（Codex、Claude Code、Pi、DeepSeek CLI、Gemini CLI）从本机目录扫描，每个文件是一段对话。ChatGPT 网页版的数据导出是一个 `conversations.json`，里面是账户的全部对话。
 
-### 3.1 附带快照数量
+ChatGPT 导出不是按顺序存消息，而是存成一棵树。用户每编辑一次提问、每重新生成一次回答，树就多一个分支，`current_node` 指向用户最后看到的那一条消息。`chatgpt_thread` 从 `current_node` 沿父节点走到根，再反转，得到界面上显示的那条线。工具调用、代码执行结果、隐藏的系统消息和推理过程不入库。测试用的导出样例里有一个被编辑掉的旧提问和一次代码执行，两者都不会出现在入库的消息里。
 
-| 来源 | 会话 | 消息 |
-| --- | ---: | ---: |
-| Codex | 591 | 36,747 |
-| Claude Code | 136 | 439 |
-| Pi | 6 | 24 |
-| DeepSeek | 7 | 118 |
-| Gemini CLI | 14 | 282 |
-| 合计 | 754 | 37,610 |
+导入的每段对话在一个事务里写入：先按（用户，来源，原始会话 ID）查重，再建导入记录、会话、按序写消息，最后按关键词规则提出知识点。同一个 ChatGPT 导出可以反复上传，第二次预览时已入库的对话显示为“已存在，将跳过”。
 
-上表为**本机真实语料**的规模（按 DATA_POLICY.md 不随仓库公开）：754 个唯一的“来源平台＋原始会话 ID”，5,826 条用户正文和 31,784 条助手正文，标注质量分布为有效 417、混合 168、低价值 169。
+## 三、逐功能需求拆解与实现
 
-**仓库附带的是合成演示快照**（`staging/structured_manifest_final.jsonl` 与 `staging/manual_annotations_all.jsonl`，内容为人工编写的虚构学习问答）。空库对合成快照实测恢复结果：14 个会话、56 条消息、14 条会话标注、19 条标签关联、14 条知识点关联。`PRAGMA integrity_check` 为 `ok`，外键违规数为 0。重复恢复新增会话和消息均为 0。真实语料的恢复流程与此一致，只是数量为上表规模。
+代码位置写到文件和函数，SQL 编号对应第四节。
 
-课程重建使用标题与前十条消息的既有规则。本轮分布为程序设计与工程实践 456、通用学习 179、数据库系统概论 104、机器学习与数据分析 15；不声称还原了原机器未附带的课程分类。
+### R01 记录导入
 
-### 3.2 可复现流程和冲突处理
+| 功能 | 输入、输出与异常 | 设计与实现位置 | 实现效果 |
+| --- | --- | --- | --- |
+| R01-F01 解析 Agent 会话文件 | 输入：本机 JSON/JSONL 文件<br>输出：来源 ID、标题、按序的用户/助手消息<br>没有正文时跳过并记原因 | 按平台映射字段，删除运行时上下文，凭据脱敏<br>`app.py:parse_conversation`、`clean_import_text`、`redact_sensitive` | 单元测试覆盖 Codex、DeepSeek 的解析、脱敏和噪声过滤 |
+| R01-F02 解析 ChatGPT 网页导出 | 输入：`conversations.json`<br>输出：多段对话<br>不是导出格式时报错 | 沿 `current_node` 取可见分支，只留 text/multimodal_text<br>`app.py:parse_chatgpt_export`、`chatgpt_thread` | 编辑过的分支和工具调用被丢弃（S09） |
+| R01-F03 查重与事务入库 | 输入：解析结果<br>输出：新增或跳过<br>重复来源 ID 跳过 | Q01 查重，一段对话一个事务<br>`app.py:import_parsed`、`scan_and_import`、`import_export_file` | 扫描本机或 `--import-file` 导入 |
+| R01-F04 上传预览与后台导入 | 输入：1–20 个文件<br>输出：逐段对话的新增/重复/无效预览，勾选后后台导入<br>超过 100 MB 返回 413 | 预览不写库，导入在后台线程逐段进行，可停止<br>`usability.py:preview_import`、`start_import`、`worker` | 一个 ChatGPT 导出展开成多行供勾选（S09） |
+| R01-F05 恢复演示学期 | 输入：附带的对话快照和学习记录<br>输出：各表新增数量和完整性检查结果<br>冲突时整批回滚 | `app.py:read_bundle`、`restore_bundled`、`seed_demo_activity`，复习结果经 `apply_review` 重放 | `--demo` 在空库上恢复 90 段对话、559 条消息和全部学习记录，重复运行不重复写入 |
 
-```powershell
-cd D:\Database\hw2
-uv sync
-uv run python app.py --restore-bundled
-uv run uvicorn app:app --host 127.0.0.1 --port 8765
-```
+### R02 检索与阅读
 
-恢复先完整校验两个 JSONL，再初始化表和基础种子数据；批量数据写入使用 `BEGIN IMMEDIATE` 事务。缺文件、坏 JSON、重复标识、消息计数错误、字段不合法或标注不对应都会失败。已有会话按消息序号、发送者、正文和时间逐项比对；内容冲突抛错，事务中的所有会话/消息/关联/标注修改回滚。
+| 功能 | 输入、输出与异常 | 设计与实现位置 | 实现效果 |
+| --- | --- | --- | --- |
+| R02-F01 多条件检索与分页 | 输入：关键词、课程、来源、知识点、批注状态、复习状态、页码<br>输出：本页会话、总数、命中片段 | Q02，过滤和 `LIMIT/OFFSET` 都在 SQL 里做<br>`app.py:conversations`、`learning_filters` | 每页 20 条，搜索结果显示命中的消息序号和片段（S06） |
+| R02-F02 阅读上下文 | 输入：会话 ID<br>输出：按序消息、批注、复习卡、知识点、标签<br>不存在或不属于当前用户返回 404 | `app.py:conversation_detail`，前端 `static/app.js:openConversation` | 正文渲染 Markdown 和公式，从错题本跳来时定位到那条消息（S03） |
 
-已有且消息一致的记录保留 ID、非空摘要和已有会话标注，只补缺失摘要与关联。用户新增的消息批注、复习卡和复习进度不会被恢复覆盖。每次成功恢复额外记一条恢复审计记录。首次初始化创建表和基础种子数据，与之后的批量恢复事务分开；冲突不会清空库或回滚此前已有的用户工作。
+### R03 课程与知识点
 
-直接扫描当前机器是另一条导入路径：支持多个 Agent 文件格式，但不会加载附带快照，也不生成深读标注；同一来源会话再次扫描会跳过，未实现后续消息的增量同步。
+| 功能 | 输入、输出与异常 | 设计与实现位置 | 实现效果 |
+| --- | --- | --- | --- |
+| R03-F01 规则提出知识点 | 输入：导入的对话<br>输出：`PROPOSED` 的知识点关联及命中的关键词 | 课程内的关键词规则，`app.py:POINT_RULES`、`import_parsed` | 关键词作为证据存在 `evidence` |
+| R03-F02 AI 建议知识点 | 输入：会话 ID，或“所有未归类的会话”<br>输出：建议的知识点及理由，或改课建议<br>模型输出无法解析返回 502，不写库 | Q06，只写 `PROPOSED`，已有关系不覆盖，新知识点每次最多 1 个<br>`classify.py:suggest`、`apply` | 演示数据里 6 段未归类对话，模型的第一建议全部与出题时的知识点一致（R03 说明） |
+| R03-F03 确认、拒绝与人工整理 | 输入：知识点决定，或课程、摘要、标签的修改<br>输出：更新后的关系，审计记录 | `app.py:decide_point`、`curate_conversation`，改课时知识点按名称迁移 | 人工修订在重复恢复快照时保留 |
 
-## 4. 逐功能需求拆解与实现
+AI 建议只在学生点按钮时运行，因为它要把会话的标题、摘要和前约 3000 字发给大模型。演示学期里有 6 段对话故意没挂知识点，一次批量建议提出 10 个关联。每段的第一个建议都和生成数据时写的知识点一致，第二个建议多半牵强，比如因为示例代码是 Python，就给一段讲测试覆盖率的对话加了“Python 与调试”。这是建议只写 `PROPOSED`、等学生确认的原因。没配 key 时退回关键词规则。
 
-以下代码位置采用“文件＋函数名”定位，避免行号随整改漂移。SQL 编号对应下一节。
+### R04 批注与错题本
 
-### R01-F01 解析、清理与校验本机记录
+| 功能 | 输入、输出与异常 | 设计与实现位置 | 实现效果 |
+| --- | --- | --- | --- |
+| R04-F01 消息级批注 | 输入：消息 ID、类型（笔记/疑问/AI 答错/重点）、内容<br>输出：批注记录和审计<br>类型非法或内容为空返回 400，不属于当前用户返回 403 | 批注单独成表，不改原消息<br>`app.py:create_annotation`、`update_annotation` | 疑问和 AI 答错可以标“弄懂了”，也能重新打开（S04） |
+| R04-F02 错题本汇总 | 输入：掌握情况（没掌握/已攻克/全部）、类型、课程<br>输出：按知识点分组、按优先级排序的错，以及总数和本周进出 | Q03，三种错各一条查询，按主知识点归组<br>`errorbook.py:mistakes` | 首页（S01、S02） |
+| R04-F03 从错题出卡 | 输入：疑问或纠错的 ID，可选的题目和答案<br>输出：立即到期的复习卡<br>不是疑问或纠错返回 404 | 疑问用原文作题目、消息作答案，纠错用纠错内容作答案<br>`errorbook.py:card_from_mistake` | 出卡后错题旁显示“已有卡” |
 
-- **输入/前置条件**：可读取的 JSON/JSONL Agent 会话；压缩文件额外要求 zstd。输出规范化来源 ID、标题、用户/助手消息和时间；无正文时返回跳过原因，解压失败时报错。
-- **设计/位置**：尚不操作数据库；字段映射、文本提取、上下文清理及确定性凭据脱敏。`app.py:iter_records`、`parse_conversation`、`clean_import_text`、`redact_sensitive`。
-- **效果**：原有 4 个测试验证 Codex/DeepSeek 解析、脱敏、噪声过滤和课程识别；这不代表对每种格式版本做了兼容性保证。
+### R05 复习
 
-### R01-F02 扫描、查重与事务入库
+| 功能 | 输入、输出与异常 | 设计与实现位置 | 实现效果 |
+| --- | --- | --- | --- |
+| R05-F01 从消息建卡 | 输入：消息 ID、题目、答案<br>输出：立即到期的卡<br>同一消息再建卡返回原卡，进度不变 | Q04 的 `ON CONFLICT DO NOTHING`<br>`app.py:create_review` | 建卡后马上能在复习队列里做 |
+| R05-F02 SM-2 调度与复习日志 | 输入：卡 ID、答对或答错<br>输出：新的间隔、连续答对、难度系数、到期时间<br>卡已暂停返回 400 | 纯函数算下一次，更新卡和写日志在同一事务<br>`app.py:schedule_next`、`apply_review`、`complete_review` | 先看题、空格揭晓、`1`/`2` 评分（S05） |
 
-- **输入/前置条件**：配置的本机来源目录，表已初始化。输出扫描/新增/跳过数量；重复来源 ID 不再入库，没有正文的文件跳过。
-- **设计/位置**：`conversation_source`、`import_job`、`conversation`、`message`、标签/知识点中间表、`audit_log`；先 Q01 查重，每个文件在一次事务中写入。接口 `POST /api/import/scan`；`app.py:source_files`、`scan_and_import`、`import_file`。
-- **效果**：保留已有来源可追溯链路。此路径与完整快照恢复分别说明，不再把“扫描当前机器”当成重现历史数据的方法。
+SM-2 是 1987 年 SuperMemo 软件提出的间隔重复算法，Anki 长期使用的调度就是它的变体。原算法让用户在 0–5 分里打分，我们只有答对和答错两档，所以简化为：答错时间隔回到 1 天、连续答对清零、难度系数减 0.2（下限 1.3）。答对时第一次间隔 3 天，之后每次乘以难度系数，上限 365 天。一张从没答错的卡间隔依次是 3、8、20、50 天，答错过两次的卡难度系数是 2.1，依次是 3、6、13、27 天。
 
-### R01-F03 完整快照恢复
+### R06 统计与导出
 
-- **输入/前置条件**：两份最终 JSONL 必须齐备且一一对应。输出新增、跳过、补齐及完整性检查结果；失败退出码为 1，同标识内容冲突时整批回滚。
-- **设计/位置**：涉及全部学习记录表，按来源 ID 恢复而非复用旧数据库整数主键。Q01、Q02；命令 `python app.py --restore-bundled`；`app.py:read_bundle`、`restore_bundled`。
-- **效果**：新库达到第 3 节的全部数量，重复恢复不增量复制；见总览截图 S01、结构化证据和恢复测试。
+| 功能 | 输入、输出与异常 | 设计与实现位置 | 实现效果 |
+| --- | --- | --- | --- |
+| R06-F01 分布统计 | 输出：课程、来源、知识点的会话数，累计复习次数和答对答错 | Q07，`LEFT JOIN` 保留没有记录的课程<br>`app.py:stats` | 统计页（S07） |
+| R06-F02 每周错题进出 | 输入：周数<br>输出：每周新记下的错、弄懂的错、复习次数和答对次数 | Q05，递归 CTE 生成连续的周，没有数据的周补 0<br>`errorbook.py:weekly` | 统计页的周表（S07） |
+| R06-F03 导出与完整备份 | 输出：当前库 JSON、单门课 Markdown、完整 SQLite 备份；恢复前先校验并保存当前库 | `app.py:export_json`、`export_course`，`usability.py:download_backup`、`restore_backup` | 完整备份包含批注、复习历史和收藏 |
 
-### R02-F01 关键词与课程/来源检索
+### R07 Text2SQL
 
-- **输入/前置条件**：关键词、可选 course_id/source_id。输出匹配会话及总数；无匹配时显示空状态。
-- **设计/位置**：`conversation`、`message`、`course`、`conversation_source`，标题 `LIKE` 或消息 `EXISTS`；Q03。接口 `GET /api/conversations`；`app.py:conversations`；`static/app.js:resetSearch`、`loadConversations`。
-- **效果**：按正文也能找到会话；改变条件回到第一页。截图 S03 搜索“外键”后找到合成演示会话。
+| 功能 | 输入、输出与异常 | 设计与实现位置 | 实现效果 |
+| --- | --- | --- | --- |
+| R07-F01 只读执行 | 输入：模型生成的 SQL<br>输出：列名和至多 200 行<br>不是单条 SELECT/WITH 返回 400 | 关键字校验、只读连接、SQLite authorizer 只放行读操作、执行步数上限<br>`text2sql.py:validate_sql`、`run_readonly` | 即使校验被绕过，写操作也会被 authorizer 拒绝 |
+| R07-F02 C3 生成 | 输入：中文问题<br>输出：SQL、结果和诊断（召回的表和列、投票分布） | `text2sql.py:generate_c3`，没配 key 时用模板 | 问答页（S08），评测见第六节 |
 
-### R02-F02 数据库分页与页面导航
+## 四、关键 SQL
 
-- **输入/前置条件**：当前筛选条件、每页 20 条及 offset。输出页内记录、总数、页码和按钮状态；第一页禁用上一页，末页禁用下一页。
-- **设计/位置**：Q03 的 `LIMIT/OFFSET` 在 SQL 中执行；同更新时间按 conversation_id 降序稳定排序。接口不改变返回字段；`app.py:conversations`；`static/app.js:updatePagination`、`loadConversations`。
-- **效果**：25 条合成演示会话分成 20/5 两页；截图 S02 显示第 2/2 页。新筛选或翻页清除失效选中项，迟到响应不覆盖新结果。
-
-### R02-F03 阅读上下文与结构化信息
-
-- **输入/前置条件**：当前用户拥有的 conversation_id。输出按序消息、摘要、标签、知识点、已有消息批注、复习卡和历史深读标注；不存在或不可访问返回 404。
-- **设计/位置**：Q04；接口 `GET /api/conversations/{conversation_id}`；`app.py:conversation_detail`；`static/app.js:openConversation`、`updateSelection`。
-- **效果**：截图 S03。详情不再反向加载列表；单次打开后无持续请求，草稿输入稳定。列表和详情分别用请求序号处理迟到响应。
-
-### R03-F01 消息级批注
-
-- **输入/前置条件**：可访问的 message_id、合法批注类型及非空正文。输出新批注并记录审计；非法类型/空白返回 400，不可访问返回 403。
-- **设计/位置**：`annotation`、`message`、`conversation`、`audit_log`；Q05。接口 `POST /api/annotations`；`app.py:create_annotation`；`static/app.js:openConversation` 内的表单处理。
-- **效果**：原始正文不变，批注独立保存。截图 S04 在合成外键问答下添加重点，刷新详情与总览统计，不循环刷新列表。
-
-### R03-F02 从消息创建复习卡
-
-- **输入/前置条件**：可访问的 message_id，以及非空问题、答案。答案预填消息正文，可编辑；输出复习卡，立即到期；空白返回 400，不可访问返回 403。
-- **设计/位置**：`review_card`、`message`、`conversation`；Q06。接口仍为 `POST /api/reviews`，请求字段不变；`app.py:create_review`；`static/app.js:openConversation` 的建卡表单。
-- **效果**：截图 S05 填写整理后的问题答案，S06 立即出现待复习卡。已有卡片显示“已加入复习”，重复 API 提交返回已有记录，不清除计划与进度。
-
-### R03-F03 到期查询与答题状态更新
-
-- **输入/前置条件**：到期卡或本人 review_id，以及 correct/wrong。输出当前到期队列或下一次到期时间；无卡显示空状态，不存在返回 404，非法 grade 返回 422。
-- **设计/位置**：`review_card` JOIN 消息/会话/课程；Q07。接口 `GET /api/reviews/due`、`POST /api/reviews/{review_id}/complete`；`app.py:due_reviews`、`complete_review`；`static/app.js:loadReviews`。
-- **效果**：答对连续次数增加，安排 3/7/14 天；答错归零并延后 1 天。S06→S07 展示答对后退出当期待复习列表；浏览器检查另覆盖答错分支。
-
-### R04-F01 学习分布统计
-
-- **输入/前置条件**：固定当前用户。输出课程、来源、知识点会话分布及课程消息数，空分类显示 0。
-- **设计/位置**：`LEFT JOIN` 保留无记录课程/来源，课程消息计数用 `COUNT(DISTINCT conversation_id)` 避免被消息数放大；Q08。知识点按名称合并跨课程同名节点，只统计属于当前用户的匹配会话。接口 `GET /api/stats`；`app.py:stats`；`static/app.js:loadStats`。
-- **效果**：S08 与恢复数据一致；测试加入另一用户的关联，当前用户的知识点计数不增长。
-
-### R04-F02 导出当前会话资料与历史快照
-
-- **输入/前置条件**：导出当前库，或选择已有 course_id；历史快照文件需存在。输出当前库会话 JSON、课程问答 Markdown，或固定历史快照 JSONL；不存在课程/快照返回 404。
-- **设计/位置**：当前库/课程导出使用 Q09 的实时 SELECT，快照通过 `FileResponse` 下载原文件。接口 `/api/export/conversations.json`、`/api/export/course/{course_id}.md`、`/api/export/structured.jsonl`、`/api/export/manual-annotations.jsonl`；`app.py:export_json`、`export_course`、`export_structured`、`export_manual_annotations`。
-- **效果**：右上角和侧栏导出当前库，课程筛选后显示 Markdown 导出；S08 展示入口与统计。浏览器实测下载 JSON/Markdown 内容与受控数据库一致，两份历史快照下载 SHA-256 与归档文件一致。上述资料导出不包含完整批注/复习状态，不替代 SQLite 备份；当前未提供统计 CSV 下载。
-
-## 5. 关键 SQL 与实现方案
-
-以下是对应实现的关键片段，参数均通过 SQLite 参数绑定传入；报告为便于阅读使用命名参数。
+参数都通过 SQLite 参数绑定传入，下面为了可读写成命名参数。
 
 ### Q01 来源会话查重
 
 ```sql
 SELECT conversation_id FROM conversation
-WHERE owner_id=:owner_id AND source_id=:source_id
-  AND source_conversation_id=:original_id;
+WHERE owner_id = :owner AND source_id = :source AND source_conversation_id = :original_id;
 ```
 
-### Q02 原始消息写入与关联补齐
+### Q02 检索、筛选与分页
 
 ```sql
-INSERT INTO message(conversation_id,seq_no,speaker,content,created_at)
-VALUES(:conversation_id,:seq_no,:speaker,:content,:created_at);
-INSERT OR IGNORE INTO conversation_tag(conversation_id,tag_id)
-VALUES(:conversation_id,:tag_id);
-INSERT OR IGNORE INTO conversation_point(conversation_id,point_id,source)
-VALUES(:conversation_id,:point_id,'bundled');
-PRAGMA integrity_check;
-PRAGMA foreign_key_check;
-```
-
-### Q03 搜索、筛选与后端分页
-
-```sql
-SELECT c.conversation_id,c.title,c.updated_at,c.started_at,
-       s.platform_name,co.course_name,COUNT(m.message_id) AS message_count
+SELECT c.conversation_id, c.title, s.platform_name, co.course_name, COUNT(m.message_id) AS message_count,
+       (SELECT COUNT(*) FROM annotation a JOIN message am ON am.message_id = a.message_id
+        WHERE am.conversation_id = c.conversation_id AND a.is_resolved = 0) AS unresolved_count
 FROM conversation c
-JOIN conversation_source s ON s.source_id=c.source_id
-JOIN course co ON co.course_id=c.course_id
-LEFT JOIN message m ON m.conversation_id=c.conversation_id
-WHERE c.owner_id=:owner_id
-  AND (c.title LIKE :keyword OR EXISTS (
-    SELECT 1 FROM message sm
-    WHERE sm.conversation_id=c.conversation_id AND sm.content LIKE :keyword
-  ))
-  AND c.course_id=:course_id
+JOIN conversation_source s ON s.source_id = c.source_id
+JOIN course co ON co.course_id = c.course_id
+LEFT JOIN message m ON m.conversation_id = c.conversation_id
+WHERE c.owner_id = :owner
+  AND (c.title LIKE :kw ESCAPE '\' OR EXISTS (SELECT 1 FROM message sm
+       WHERE sm.conversation_id = c.conversation_id AND sm.content LIKE :kw ESCAPE '\'))
+  AND EXISTS (SELECT 1 FROM conversation_point cp WHERE cp.conversation_id = c.conversation_id AND cp.point_id = :point)
 GROUP BY c.conversation_id
-ORDER BY c.updated_at DESC,c.conversation_id DESC
+ORDER BY c.updated_at DESC, c.conversation_id DESC
 LIMIT :limit OFFSET :offset;
 ```
 
-无关键词/课程/来源时，程序省略相应筛选条件；总数使用同一组条件执行 `COUNT(*)`，并非在浏览器载入全部结果后筛选。
+没有给出的条件整行省略。总数用同一组条件单独 `COUNT(*)`。
 
-### Q04 按序读取消息及批注
+### Q03 错题本：主知识点与三种错
+
+每个会话的主知识点：已确认优先，其次待确认，同级取编号最小的。
 
 ```sql
-SELECT * FROM message WHERE conversation_id=:conversation_id ORDER BY seq_no;
-SELECT annotation_id,annotation_type,content,is_resolved,created_at
-FROM annotation WHERE message_id=:message_id ORDER BY created_at;
+SELECT cp.conversation_id, kp.point_id, kp.point_name
+FROM conversation_point cp JOIN knowledge_point kp ON kp.point_id = cp.point_id
+WHERE cp.status IN ('CONFIRMED','PROPOSED')
+  AND kp.point_id = (SELECT cp2.point_id FROM conversation_point cp2
+                     WHERE cp2.conversation_id = cp.conversation_id AND cp2.status IN ('CONFIRMED','PROPOSED')
+                     ORDER BY cp2.status = 'CONFIRMED' DESC, cp2.point_id LIMIT 1);
 ```
 
-### Q05 独立写入批注
+疑问和 AI 答错来自批注，常错卡来自复习卡，两条查询都左连接上面的主知识点（下记作 `pp`）。
 
 ```sql
-INSERT INTO annotation(message_id,author_id,annotation_type,content)
-VALUES(:message_id,:author_id,:annotation_type,:content)
-RETURNING annotation_id,annotation_type,content,is_resolved,created_at;
+SELECT CASE a.annotation_type WHEN 'QUESTION' THEN 'question' ELSE 'correction' END AS kind,
+       a.annotation_id, a.content, a.is_resolved, m.seq_no, c.title, pp.point_name
+FROM annotation a
+JOIN message m ON m.message_id = a.message_id
+JOIN conversation c ON c.conversation_id = m.conversation_id
+LEFT JOIN (/* 主知识点 */) pp ON pp.conversation_id = c.conversation_id
+WHERE c.owner_id = :owner AND a.annotation_type IN ('QUESTION','CORRECTION');
+
+SELECT 'card' AS kind, r.review_card_id, r.question,
+       (r.review_count >= 3 OR r.status = 'COMPLETED') AS is_resolved,
+       r.lapse_count, (r.status = 'ACTIVE' AND r.due_at <= CURRENT_TIMESTAMP) AS overdue, pp.point_name
+FROM review_card r
+JOIN message m ON m.message_id = r.message_id
+JOIN conversation c ON c.conversation_id = m.conversation_id
+LEFT JOIN (/* 主知识点 */) pp ON pp.conversation_id = c.conversation_id
+WHERE r.owner_id = :owner AND r.lapse_count > 0 AND r.status <> 'SUSPENDED';
 ```
 
-### Q06 立即到期且不覆盖既有卡片
+分组和优先级在 Python 里算（`errorbook.py:mistakes`），因为同一组错要按“没掌握在前、逾期在前、疑问在前”多重排序，写成 SQL 窗口函数反而难读。
+
+### Q04 建卡、评分与复习日志
 
 ```sql
-INSERT INTO review_card(message_id,owner_id,question,answer,due_at)
-VALUES(:message_id,:owner_id,:question,:answer,datetime('now'))
-ON CONFLICT(owner_id,message_id) DO NOTHING;
-SELECT * FROM review_card WHERE owner_id=:owner_id AND message_id=:message_id;
-```
+INSERT INTO review_card(message_id, owner_id, question, answer, due_at)
+VALUES(:message, :owner, :question, :answer, datetime('now'))
+ON CONFLICT(owner_id, message_id) DO NOTHING;
 
-### Q07 到期条件与下一次复习
-
-```sql
-SELECT * FROM review_card
-WHERE owner_id=:owner_id AND status='ACTIVE' AND due_at<=CURRENT_TIMESTAMP
-ORDER BY due_at;
+-- 评分：一个事务内先更新卡，再写日志
 UPDATE review_card
-SET review_count=:next_count, interval_days=:interval,
-    due_at=datetime('now',:next_interval),
-    last_reviewed_at=datetime('now'),status='ACTIVE'
-WHERE review_card_id=:review_id;
+SET review_count = :streak, interval_days = :interval, ease_factor = :ease,
+    lapse_count = lapse_count + :is_wrong, due_at = :due, last_reviewed_at = :now, status = 'ACTIVE'
+WHERE review_card_id = :card;
+INSERT INTO review_log(review_card_id, reviewed_at, grade, interval_before, interval_after,
+                       streak_before, streak_after, due_before, due_after, ease_before, ease_after)
+VALUES(:card, :now, :grade, :old_interval, :interval, :old_streak, :streak, :old_due, :due, :old_ease, :ease);
 ```
 
-程序先按当前用户读取并校验 review_id，再计算下一间隔；时间按 SQLite UTC 保存与比较。
-
-### Q08 课程及知识点统计
+### Q05 每周错题进出
 
 ```sql
-SELECT co.course_name,COUNT(DISTINCT c.conversation_id) AS conversations,
-       COUNT(m.message_id) AS messages
+WITH RECURSIVE week(start) AS (
+    SELECT date('now', '-6 days', 'weekday 1', :back)
+    UNION ALL SELECT date(start, '+7 days') FROM week
+    WHERE start < date('now', '-6 days', 'weekday 1')
+),
+noted AS (
+    SELECT date(a.created_at, '-6 days', 'weekday 1') AS wk, COUNT(*) AS n
+    FROM annotation a JOIN message m USING(message_id) JOIN conversation c USING(conversation_id)
+    WHERE c.owner_id = :owner AND a.annotation_type IN ('QUESTION','CORRECTION') GROUP BY wk
+)
+SELECT week.start, COALESCE(noted.n, 0) AS noted /* 弄懂的、复习次数同理 */
+FROM week LEFT JOIN noted ON noted.wk = week.start ORDER BY week.start;
+```
+
+`date(x, '-6 days', 'weekday 1')` 先退 6 天，再前进到下一个周一，结果是 x 所在那一周的周一，x 本身是周一时不变。测试用一个周一和它前一天的周日核对了分组。
+
+### Q06 AI 建议只写待确认关系
+
+```sql
+INSERT OR IGNORE INTO conversation_point(conversation_id, point_id, confidence, source, status, evidence)
+VALUES(:conversation, :point, 0.8, 'llm', 'PROPOSED', :reason);
+```
+
+主键是（会话，知识点），所以已经确认或拒绝的关系不会被这条语句改动。
+
+### Q07 课程分布
+
+```sql
+SELECT co.course_name, COUNT(DISTINCT c.conversation_id) AS conversations, COUNT(m.message_id) AS messages
 FROM course co
-LEFT JOIN conversation c ON c.course_id=co.course_id AND c.owner_id=:owner_id
-LEFT JOIN message m ON m.conversation_id=c.conversation_id
+LEFT JOIN conversation c ON c.course_id = co.course_id AND c.owner_id = :owner
+LEFT JOIN message m ON m.conversation_id = c.conversation_id
 GROUP BY co.course_id;
-
-SELECT kp.point_name,COUNT(DISTINCT c.conversation_id) AS conversations
-FROM knowledge_point kp
-LEFT JOIN conversation_point cp ON cp.point_id=kp.point_id
-LEFT JOIN conversation c ON c.conversation_id=cp.conversation_id
-  AND c.owner_id=:owner_id
-GROUP BY kp.point_name ORDER BY conversations DESC,kp.point_name;
 ```
 
-知识点必须统计过滤后成功关联的 `c.conversation_id`，不能统计过滤前的 `cp.conversation_id`。
+## 五、页面截图
 
-### Q09 当前库与课程正文导出
+截图由 `tests/browser_check.py --capture-report` 在临时数据库上跑 `--demo` 后拍摄，拍摄时新增了一条疑问，ChatGPT 导入只预览没有入库。
 
-```sql
-SELECT conversation_id,title,updated_at FROM conversation
-WHERE owner_id=:owner_id AND course_id=:course_id ORDER BY updated_at DESC;
-SELECT speaker,content FROM message
-WHERE conversation_id=:conversation_id ORDER BY seq_no;
-```
+### S01 错题本
 
-## 6. 实际应用截图与操作结果
+错题本默认只列没掌握的错。演示学期里有 25 个疑问没弄懂、7 处 AI 答错待核对、10 张卡还不稳，分在 17 个知识点下，最近 7 天新记下 7 个、弄懂 6 个，累计攻克 50 个。排在最前的“索引与查询优化”组有 2 个疑问和 2 张常错卡，两张卡一张今天到期、一张逾期 2 天，优先级为 2×3 + 2×2 + 2×1 = 12。
 
-截图由 `tests/browser_check.py --capture-report` 在真实 Edge 页面生成，数据来自临时库的完整快照恢复。以下图中新增的学习重点和复习答案是本轮演示操作，历史问答保持原样。
+![错题本首页](screenshots/01-error-book.png)
 
-### S01 总览：恢复后核对数据量
+### S02 只看 AI 答错
 
-操作：完成恢复后打开首页。结果：25 个会话、50 条消息（合成演示夹具）；未添加本轮演示批注前，消息批注和待复习计数为 0。
+只看 AI 答错时剩下 7 条，每条是学生写下的纠错原文。组的顺序仍按全部没掌握的错计算优先级，所以“事务与并发”排在最前，它除了这 2 处 AI 答错还有 1 个疑问和 2 张常错卡，优先级为 11。
 
-![恢复后的学习总览](screenshots/01-overview.png)
+![只看 AI 答错](screenshots/02-error-book-ai-mistakes.png)
 
-### S02 分页：浏览第二页
+### S03 跳回原消息
 
-操作：进入会话库，点击下一页。结果：第 2/2 页，共 25 条，翻页入口与总数可见。
+点一条 AI 答错的来源，会话库打开那段对话并定位到出错的消息，红色批注是学生写的纠错。
 
-![会话第二页](screenshots/02-pagination.png)
+![定位到出错的消息](screenshots/03-source-message.png)
 
-### S03 检索与上下文
+### S04 记一条新疑问
 
-操作：搜索“外键”，打开合成演示会话。结果：显示原始消息、摘要、标签/知识点及深读标注；知识点标注支持确认/拒绝。
+在第一条用户消息下选“疑问”并保存，批注立刻显示在消息下面，错题本里同时多出一条。
 
-![检索和学习上下文](screenshots/03-search-detail.png)
+![记下疑问](screenshots/04-new-doubt.png)
 
-### S04 独立重点批注
+### S05 复习
 
-操作：在消息下添加 IMPORTANT 类型重点（外键维护参照完整性）。结果：重点单独显示，原始问答保持不变。
+复习队列里今天有 6 张卡到期。第一张已按空格翻开答案，按 2 记答对、按 1 记答错，结果交给 SM-2 算出下一次的间隔。每张卡下方注明课程、来源会话和当前连续答对的次数。
 
-![消息级重点批注](screenshots/04-annotation.png)
+![复习队列](screenshots/05-review.png)
 
-### S05 从消息整理复习卡
+### S06 会话库
 
-操作：点击加入复习，填写问题，编辑由消息正文预填的答案。结果：表单可直接完成学习资料到复习卡的转换，不需要操作数据库。
+会话库左边是会话列表，每行标出是否读过、读到第几条和还有几条批注没解决。右边打开的是《2PL 与死锁的误区讨论》，上方是会话标注和知识点，“AI 建议”按钮只在点击时把这段对话发给大模型。第 1 条消息下的黄色批注是 S04 里新记的疑问。
 
-![创建复习卡](screenshots/05-create-review.png)
+![会话库](screenshots/06-library.png)
 
-### S06 创建后立即可复习
+### S07 统计
 
-操作：保存卡片并进入复习队列。结果：立即出现 1 张到期卡，可以选择答对或答错。
+统计页汇总整个演示学期：累计复习 353 次，答对 245 次、答错 108 次。三列分别是各课程、各来源平台和各知识点的会话数，会话最多的课程是数据库系统概论，38 段。
 
-![立即到期复习卡](screenshots/06-due-review.png)
+![统计](screenshots/07-statistics.png)
 
-### S07 答对后的队列变化
+### S08 问答
 
-操作：点击答对。结果：当期待复习列表归零，该卡片下一次复习延后 3 天，数据库中的卡片并未删除。
+问题是“哪门课我还没弄懂的疑问最多？”。C3 召回了 6 张表，5 条采样都能执行，按结果分成两组，取 4 票那组的 SQL，答案是数据库系统概论 11 个。SQL 下方的召回表、召回列和投票方块对应 C3 的三个步骤。
 
-![完成当次复习](screenshots/07-review-completed.png)
+![Text2SQL 问答](screenshots/08-text2sql.png)
 
-### S08 实时分布与导出入口
+### S09 导入 ChatGPT 导出
 
-操作：进入数据统计。结果：课程与来源会话量由 SQL 汇总；同名知识点跨课程合并显示。侧栏明确区分当前库导出与历史快照。
+上传测试用的 `conversations.json`，预览展开成两段对话，都识别为 ChatGPT。只有系统消息的第三段没有出现在列表里。
 
-![学习统计与导出入口](screenshots/08-statistics-export.png)
+![ChatGPT 导出预览](screenshots/09-chatgpt-import.png)
 
-## 7. 与 AI 编码工具协作的实际设计取舍
+## 六、Text2SQL 评测
 
-本节只记录本轮核查、计划确认和代码整改中可核实的决策，不假设此前存在未提供的设计争论。
+### C3 是什么
 
-| 议题 | 讨论的方案 | 本轮选择与理由 | 实现与验证 |
-| --- | --- | --- | --- |
-| 演示数据范围 | 公开真实对话，或只附带合成样例 | 真实对话含个人信息，按 DATA_POLICY.md 不公开；仓库改附 14 条合成学习问答供复现。 | 真实语料 754/37,610 仅本机开发验证；仓库 `--restore-bundled` 恢复 14/56，完整性与外键校验通过。 |
-| 新卡首次复习时间 | 沿用次日到期，或创建后立即可复习 | 用户选择立即可复习，页面可当场完成一次学习流程。 | 保留 API 请求字段，改到期默认值；浏览器当场建卡和答题。 |
-| AI 协作记录的来源 | 补入用户另行提供的历史经历，或记录本轮真实取舍 | 用户选择本轮记录，避免把推测写成发生过的分歧。 | 本表对应本轮明确选择、代码决策和实际测试。 |
-| 已有数据库恢复冲突 | 覆盖已有记录，或保留用户工作并报告冲突 | 经用户确认的实施计划采用消息比对、补缺及整批回滚，避免丢失批注和复习进度。 | 测试先写入新会话再遇冲突，确认前面的写入也全部回滚。 |
-| 重复创建复习卡 | 沿用 `INSERT OR REPLACE`，或冲突时返回原卡 | 实施计划要求保留复习进度，因此改为插入冲突不更新。 | 答对后重复建卡，ID、问题答案、次数、间隔和到期时间均保持原值。 |
-| 页面刷新方式 | 列表与详情相互加载，或按用户动作分别加载 | 核查实际发现循环请求，采用独立加载和本地选中样式更新。 | 浏览器打开一次详情后请求数稳定，未提交输入不被重绘。 |
-| 课程分类是否可称为完整还原 | 把快照恢复当成历史库完全重现，或说明缺失字段的重建规则 | 由于快照没有课程字段，只能明确规则重建，不声称还原历史课程分布。 | 报告记录重建后的实际分布和分类局限，截图保留真实结果。 |
+C3 出自 Dong 等人 2023 年的论文《C3: Zero-shot Text-to-SQL with ChatGPT》，是一种不训练模型、只靠提示词的方法，在 Spider 基准的测试集上取得了当时零样本方法的最好成绩。它由三部分组成：
 
-## 8. 验证与限制
+- 清晰提示（Clear Prompting）：先让模型从全部表里挑出和问题相关的表，再挑相关的列，生成 SQL 时只给这部分结构。
+- 校准提示（Calibration with Hints）：在提示里写明模型常犯的错，比如问“多少”时不要把被计数的列也选出来。
+- 一致性输出（Consistent Output）：采样多条 SQL，各自执行，按结果分组，取票数最多的那组。
 
-基础整改包含原有 4 个单元测试及 12 个恢复/API 测试；附加功能增加 8 项，可用性增强再增加 10 项，共 34 项，另有三套真实 Edge 页面回归。测试覆盖完整恢复与重复执行、无效输入、事务回滚、分页和所有者范围、人工整理保留、复习日志、完整库备份往返、待办、卡片管理、收藏与上传任务。
+我们的实现在 `text2sql.py`，模型是 `deepseek-chat`，采样 5 条，温度 0.7。基线是同一个模型拿到完整表结构后直接生成一条 SQL。
 
-浏览器额外验证迟到详情/列表响应不覆盖新结果、失败后可重试、批注草稿稳定、建卡立即到期、答对/答错状态更新、刷新后卡片持久、下载内容及历史快照哈希一致。具体结果见 [整改验收](IMPLEMENTATION_VERIFICATION.md) 和 [结构化浏览器证据](IMPLEMENTATION_EVIDENCE.json)。
+### 评测怎么做
 
-当前限制：固定本地用户；课程识别较粗；不支持同一来源会话增量同步；历史深读标注未在本轮逐条复审。正文按原文存储，页面现已支持 Markdown 与数学排版；资料导出与完整库备份分别提供。视频与汇报 PPT 另行制作，不在本次整改范围内。
+题目在 `eval/text2sql_cases.jsonl`，每题有中文问题和我们手写的标准 SQL。指标是执行准确率：生成的 SQL 和标准 SQL 在同一个库上执行，结果的值多重集合相同就算对，不比较列名、行序和列序。报错、未通过安全校验都算错。评测库和 `--demo` 一样，在临时目录构建。
 
-## 9. 相关工作与附加功能
+题目分两档：
 
-在基础整改后，结合相关研究增加了命中消息定位、可追溯的人工整理，以及逐次复习日志。完整需求、接口、SQL/代码位置、3 张新增截图和验收记录见 [附加功能与相关研究](ADDITIONAL_FEATURES.md)。8 张主截图与 3 张附加截图均来自合成演示数据，不含真实对话。
+- 基础题 18 道，如“一共有多少张复习卡”“每门课程各有多少会话”，多数只涉及一两张表。
+- 学习者题 22 道，是学生对着错题本会问的问题，如“哪门课我还没弄懂的疑问最多”“逾期超过 3 天还没复习的卡有哪些”“每门课的复习正确率”，需要四五张表的连接、时间窗口、比例或反连接。
 
-相关工作包括 [Open WebUI 的历史检索](https://docs.openwebui.com/features/chat-conversations/chat-features/history-search/)、[Memory Sandbox](https://arxiv.org/abs/2308.01542) 的可控记忆管理和 [Py-FSRS](https://github.com/open-spaced-repetition/py-fsrs) 的复习数据模型。本轮借鉴对应设计思路，实现了片段/消息定位、课程摘要标签修订及真实日志记录；现有调度仍是固定间隔。
+### 结果
 
-[Nexus AI Chat Importer](https://github.com/superkikim/nexus-ai-chat-importer/blob/HEAD/docs/architecture/README.md) 的适配器架构、[Sensecape（UIST 2023）](https://arxiv.org/abs/2305.11483) 的层级知识组织，以及 [ReFind（2026 年预印本）](https://arxiv.org/abs/2608.12888) 的原始记录检索，记录为导入器拆分、知识点导航、时间与上下文检索的后续参考。尚未接入这些完整系统或开展检索效率用户实验。
+下表是同一套题的三次运行。C3 每题采样 5 条，温度 0.7，所以每次结果略有不同。第 3 次运行的逐题 SQL 和诊断见 `eval/text2sql_eval_result.md`。
 
-## 10. 日常可用性增强
+| 运行 | 基础题·基线 | 基础题·C3 | 学习者题·基线 | 学习者题·C3 | 合计·基线 | 合计·C3 | 平均耗时（基线 / C3） |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 16/18 | 16/18 | 22/22 | 20/22 | 38/40 | 36/40 | 3.4 / 11.1 秒 |
+| 2 | 16/18 | 16/18 | 21/22 | 19/22 | 37/40 | 35/40 | 4.6 / 11.2 秒 |
+| 3 | 15/18 | 16/18 | 21/22 | 19/22 | 36/40 | 35/40 | 2.7 / 8.7 秒 |
 
-后续完成先回忆再揭晓、完整备份与恢复、学习待办、Markdown/公式/代码排版、卡片管理、收藏与继续阅读、导入预览和后台进度。详见 [七项功能的需求拆解、接口与截图](USABILITY_FEATURES.md) 和 [实施前计划](USABILITY_PLAN.md)。
+C3 在学习者题上比基线少对 1 到 2 道，错在 Q27、Q36 和 Q40 三题。Q27、Q40 三次全错，Q36 错了两次，基线这三题三次都对。三题错的原因相同：C3 只把召回到的表和列给模型，召回漏掉了连接必经的表或主键列，模型就臆造列名或绕路连接。
 
-新增演示使用独立临时库中的 25 个受控会话，验证一次新增导入后从完整备份恢复，以及恢复前快照可下载；未在工作区历史数据库上执行覆盖恢复。结构化浏览器结果见 [USABILITY_EVIDENCE.json](USABILITY_EVIDENCE.json)。
+- Q40 问每门课各有多少张卡至少答错过一次。复习卡要经 `message` 表连到会话，会话再按 `course_id` 连到课程，C3 三次召回的表里都没有 `message`。模型三次都改从课程经知识点关联绕到会话，没有关联知识点的会话就被漏掉，数据库系统概论数出 18 张，正确答案是 19 张，漏掉的那张卡所在的会话没有关联知识点。
+- Q36 问还有多少条待确认的会话-知识点关联。召回只留下 `conversation_point` 一张表，校准提示又要求会话统计加 `conversation.owner_id = 1`。模型看不到 `conversation` 的列，有的采样就写出不存在的 `conversation.id`，执行失败。
+- Q27 问每门课的复习正确率，同样漏掉了 `message`。候选 SQL 没有正确的连接条件，结果行数成倍膨胀，被执行步数上限中止，或得出错误的比例。
+
+基础题上两种方法各错 2 到 3 道，多数是输出形状和标准答案不同。Q5 和 Q12 的基线 SQL 多选了一列 `course_id`，Q12 的 C3 SQL 只给课程编号、没有课程名，Q10 两种方法都把答对和答错次数排成一行两列。执行准确率要求结果的值完全一致，所以这几题即使查询逻辑对也算错。
+
+C3 只给相关表的设计在表很多、问题只涉及其中少数几张时能减少干扰。我们的库只有 18 张表，完整结构加外键不长，基线拿到全部外键就能找到连接路径，召回漏表的损失大于它减少的干扰。我们推测，召回之后把连接路径上的中间表和主键、外键列补回去，C3 在学习者题上能追平基线，这一点还没有验证。
+
+这套题还有两处限制。Q25 和 Q26 在当前演示数据上的标准答案是空集，一条什么都查不出的 SQL 也算对，所以这两题区分不了方法。三次运行只用了 `deepseek-chat` 一个模型，题目也只有 40 道，一两道的差距在随机波动范围内，三次运行里稳定出现的是 C3 在 Q27、Q36、Q40 上的错误。
+
+## 七、测试
+
+单元测试 82 项，用临时数据库，不读个人目录，涉及大模型的部分用替身。三套浏览器检查在真实浏览器里走完主要流程，包括错题本里标弄懂、从已攻克里重新打开、跳回原消息。几项和本报告结论直接相关的测试：
+
+- 每张演示复习卡的当前状态都等于重放它自己的复习日志的结果，相邻两次复习首尾相接（`tests/test_errorbook.py`）。
+- 错题本的分组、优先级、连续答对 3 次攻克、被拒绝的知识点不参与分组（同上）。
+- ChatGPT 导出的分支选择、工具调用过滤、重复上传跳过（`tests/test_chatgpt_export.py`）。
+- AI 建议不覆盖已确认或已拒绝的关系，改课建议不写入知识点，模型输出坏了不写库（`tests/test_classify.py`）。
+- 告诉 Text2SQL 模型的每一列都真实存在于 `schema.sql`（`tests/test_text2sql.py`）。
+
+## 限制
+
+- 固定一个本地演示账户，没有登录和权限。
+- 一段会话只属于一门课，跨课程的对话只能靠知识点和标签补充。
+- 同一来源会话后续新增的消息不会增量同步，只能整段重新导入。
+- 演示对话是合成的。经过推理模型核查不等于没有错误，核查本身也会漏判。
+- 错题本的优先级权重（3、2、2、1）是我们定的，没有用真实学习数据验证过它是否比按时间排序更有用。
+- 作者的 754 段真实对话以编程和科研任务为主，按关键词规则归课时 456 段落在“程序设计与工程实践”。真实对话能不能像演示数据那样整齐地按课程整理，还没验证过。
+
+## 与 AI 编码工具协作
+
+本项目在 Claude Code 协助下完成。下面是几项由我们决定、影响设计的取舍：
+
+| 议题 | 选择与理由 |
+| --- | --- |
+| 演示数据 | 真实对话含个人信息，仓库只放合成数据。合成数据用大模型生成后再用推理模型核查，因为生成的“正确”回答里也会混进计算错误，比如时间片轮转的周转时间算错 |
+| 错题本是否单独建表 | 不建表，从已有表实时算。好处是不会和批注、复习卡的状态不一致，代价是每次打开要跑几条连接查询，在演示规模下一次约 11 毫秒 |
+| AI 建议的触发方式 | 只在点按钮时调用，导入时不自动调用，因为它会把对话内容发给外部模型 |
+| 复习调度 | 从固定的 3/7/14 天改成 SM-2，让答错的次数影响以后的间隔，常错卡才真的会更常出现 |

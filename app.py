@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import subprocess
 import sys
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -39,6 +40,14 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("confirmed_by", "INTEGER REFERENCES app_user(user_id) ON DELETE RESTRICT"),
         ("confirmed_at", "TEXT"),
     ],
+    "review_card": [
+        ("ease_factor", "REAL NOT NULL DEFAULT 2.5 CHECK(ease_factor >= 1.3)"),
+        ("lapse_count", "INTEGER NOT NULL DEFAULT 0 CHECK(lapse_count >= 0)"),
+    ],
+    "review_log": [
+        ("ease_before", "REAL"),
+        ("ease_after", "REAL"),
+    ],
 }
 
 SOURCE_ROOTS = {
@@ -49,16 +58,45 @@ SOURCE_ROOTS = {
     "Gemini CLI": Path(os.getenv("GEMINI_DATA_ROOT", Path.home() / ".gemini" / "tmp")),
 }
 
+# Platforms that can be imported. The first five are scanned from local Agent folders;
+# ChatGPT is a web export (conversations.json) that the user uploads or passes on the CLI.
+PLATFORMS = {**{name: "local" for name in SOURCE_ROOTS}, "ChatGPT": "web_export"}
+
+COURSES = [("DB", "数据库系统概论"), ("OS", "操作系统"), ("ML", "机器学习与数据分析"), ("ENG", "程序设计与工程实践"), ("GEN", "通用学习")]
+# Seed knowledge points per course. Imports, the bundled snapshot and the LLM may add more.
+KNOWLEDGE_POINTS = {
+    "数据库系统概论": ["关系模型与关系代数", "SQL 与查询", "数据库完整性", "规范化与模式设计", "索引与查询优化", "事务与并发", "故障恢复"],
+    "操作系统": ["进程与线程", "CPU 调度", "同步与死锁", "内存管理", "文件系统"],
+    "机器学习与数据分析": ["模型评估与调优", "过拟合与正则化", "优化与梯度下降", "树模型与集成学习"],
+    "程序设计与工程实践": ["软件工程与测试", "Git 与协作", "Python 与调试"],
+}
 COURSE_RULES = [
-    ("数据库系统概论", ["数据库", "sql", "postgres", "sqlite", "关系模型", "事务", "外键", "索引"]),
-    ("程序设计与工程实践", ["python", "typescript", "javascript", "api", "测试", "git", "代码", "编程"]),
-    ("机器学习与数据分析", ["机器学习", "深度学习", "pytorch", "模型", "训练", "分类", "数据分析"]),
+    ("数据库系统概论", ["数据库", "sql", "postgres", "sqlite", "关系模型", "关系代数", "事务", "外键", "索引", "范式", "b+树"]),
+    ("操作系统", ["进程", "线程", "调度", "页表", "虚拟内存", "缺页", "信号量", "互斥锁", "操作系统", "文件系统", "inode"]),
+    ("机器学习与数据分析", ["机器学习", "深度学习", "pytorch", "过拟合", "正则化", "梯度下降", "训练集", "交叉验证", "数据分析", "决策树"]),
+    ("程序设计与工程实践", ["python", "typescript", "javascript", "api", "单元测试", "git", "代码", "编程", "调试"]),
 ]
+# (course, point, keywords). A point is only proposed inside the course the conversation landed in.
 POINT_RULES = [
-    ("数据库完整性", ["完整性", "外键", "参照完整性", "约束"]),
-    ("SQL 与查询", ["sql", "select", "join", "查询"]),
-    ("事务与并发", ["事务", "锁", "并发", "回滚"]),
-    ("软件工程与测试", ["测试", "bug", "接口", "部署", "代码"]),
+    ("数据库系统概论", "关系模型与关系代数", ["关系代数", "选择运算", "投影", "笛卡尔积", "自然连接", "除运算"]),
+    ("数据库系统概论", "SQL 与查询", ["sql", "select", "join", "子查询", "group by", "having", "查询"]),
+    ("数据库系统概论", "数据库完整性", ["完整性", "外键", "参照完整性", "约束", "主键"]),
+    ("数据库系统概论", "规范化与模式设计", ["范式", "函数依赖", "bcnf", "3nf", "模式分解", "e-r"]),
+    ("数据库系统概论", "索引与查询优化", ["索引", "b+树", "执行计划", "查询优化", "explain"]),
+    ("数据库系统概论", "事务与并发", ["事务", "锁", "并发", "隔离级别", "可串行化", "两阶段"]),
+    ("数据库系统概论", "故障恢复", ["日志", "恢复", "检查点", "undo", "redo", "wal"]),
+    ("操作系统", "进程与线程", ["进程", "线程", "fork", "上下文切换"]),
+    ("操作系统", "CPU 调度", ["调度", "时间片", "轮转", "优先级", "周转时间"]),
+    ("操作系统", "同步与死锁", ["信号量", "互斥", "死锁", "银行家", "临界区", "生产者"]),
+    ("操作系统", "内存管理", ["页表", "分页", "虚拟内存", "缺页", "tlb", "置换"]),
+    ("操作系统", "文件系统", ["文件系统", "inode", "目录", "磁盘块"]),
+    ("机器学习与数据分析", "模型评估与调优", ["准确率", "召回率", "精确率", "交叉验证", "auc", "评估"]),
+    ("机器学习与数据分析", "过拟合与正则化", ["过拟合", "欠拟合", "正则化", "l1", "l2", "dropout"]),
+    ("机器学习与数据分析", "优化与梯度下降", ["梯度下降", "学习率", "梯度", "损失函数", "adam"]),
+    ("机器学习与数据分析", "树模型与集成学习", ["决策树", "随机森林", "boosting", "bagging", "信息增益"]),
+    ("程序设计与工程实践", "软件工程与测试", ["测试", "bug", "接口", "部署"]),
+    ("程序设计与工程实践", "Git 与协作", ["git", "merge", "rebase", "分支", "pull request"]),
+    ("程序设计与工程实践", "Python 与调试", ["python", "traceback", "调试", "异常", "断点"]),
 ]
 
 
@@ -115,17 +153,20 @@ def init_db() -> None:
             db.execute("INSERT INTO message_fts(message_fts) VALUES('rebuild')")
         db.executemany("INSERT OR IGNORE INTO app_role(role_id, role_code, role_name) VALUES(?,?,?)", [(1, "STUDENT", "学生"), (2, "TEACHER", "教师"), (3, "ADMIN", "管理员")])
         db.execute("INSERT OR IGNORE INTO app_user(user_id, role_id, username, display_name) VALUES(1,1,'demo','演示学生')")
-        db.executemany("INSERT OR IGNORE INTO conversation_source(platform_name, source_type) VALUES(?,?)", [("Codex", "local_jsonl"), ("Claude Code", "local_jsonl"), ("Pi", "local_jsonl"), ("DeepSeek", "local_zstd"), ("Gemini CLI", "local_json")])
+        db.executemany("INSERT OR IGNORE INTO conversation_source(platform_name, source_type) VALUES(?,?)", [("Codex", "local_jsonl"), ("Claude Code", "local_jsonl"), ("Pi", "local_jsonl"), ("DeepSeek", "local_zstd"), ("Gemini CLI", "local_json"), ("ChatGPT", "web_export")])
         legacy_deepseek = db.execute("SELECT source_id FROM conversation_source WHERE platform_name='DeepSeek' AND source_type='uploaded_file'").fetchone()
         if legacy_deepseek:
             db.execute("DELETE FROM conversation_source WHERE platform_name='DeepSeek' AND source_type='local_zstd' AND source_id NOT IN (SELECT DISTINCT source_id FROM conversation)")
             db.execute("UPDATE conversation_source SET source_type='local_zstd' WHERE source_id=?", (legacy_deepseek[0],))
-        for code, name in [("DB", "数据库系统概论"), ("ENG", "程序设计与工程实践"), ("ML", "机器学习与数据分析"), ("GEN", "通用学习")]:
+        for code, name in COURSES:
             db.execute("INSERT OR IGNORE INTO course(course_code, course_name) VALUES(?,?)", (code, name))
         courses = {r["course_name"]: r["course_id"] for r in db.execute("SELECT course_id,course_name FROM course")}
-        for course_name, terms in [("数据库系统概论", ["数据库完整性", "SQL 与查询", "事务与并发"]), ("程序设计与工程实践", ["软件工程与测试"])] :
-            for point in terms:
+        for course_name, points in KNOWLEDGE_POINTS.items():
+            for point in points:
                 db.execute("INSERT OR IGNORE INTO knowledge_point(course_id, point_name, level_no) VALUES(?,?,1)", (courses[course_name], point))
+        if ("review_card", "lapse_count") in added:
+            # Older databases: derive how often each card was answered wrong from its review history.
+            db.execute("UPDATE review_card SET lapse_count=(SELECT COUNT(*) FROM review_log l WHERE l.review_card_id=review_card.review_card_id AND l.grade='wrong')")
 
 
 def text_from(value: Any) -> str:
@@ -282,6 +323,70 @@ def parse_conversation(path: Path, platform: str) -> dict[str, Any]:
     return {"source_id": source_id, "title": redact_sensitive(title) or "未命名会话", "started_at": started, "messages": messages, "path": str(path)}
 
 
+def is_chatgpt_export(payload: Any) -> bool:
+    items = payload if isinstance(payload, list) else [payload]
+    return bool(items) and all(isinstance(item, dict) and isinstance(item.get("mapping"), dict) for item in items[:5])
+
+
+def chatgpt_thread(conversation: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the visible branch of a ChatGPT conversation tree, oldest first.
+
+    The export stores every edit/regeneration as a tree in ``mapping``; ``current_node`` is the
+    leaf the user last saw. Walking parents from it yields exactly the thread shown in the UI.
+    """
+    mapping = conversation["mapping"]
+    node_id = conversation.get("current_node")
+    if node_id not in mapping:  # older exports: fall back to the deepest leaf
+        leaves = [key for key, node in mapping.items() if not node.get("children")]
+        node_id = max(leaves, key=lambda key: (mapping[key].get("message") or {}).get("create_time") or 0, default=None)
+    chain, seen = [], set()
+    while node_id and node_id in mapping and node_id not in seen:
+        seen.add(node_id)
+        chain.append(mapping[node_id])
+        node_id = mapping[node_id].get("parent")
+    messages = []
+    for node in reversed(chain):
+        message = node.get("message") or {}
+        role = (message.get("author") or {}).get("role")
+        content = message.get("content") or {}
+        metadata = message.get("metadata") or {}
+        if role not in {"user", "assistant"} or metadata.get("is_visually_hidden_from_conversation"):
+            continue
+        if content.get("content_type") not in {"text", "multimodal_text"}:
+            continue  # tool calls, code execution, browsing results, reasoning traces
+        text = clean_import_text("\n".join(part for part in content.get("parts") or [] if isinstance(part, str)))
+        if text:
+            created = message.get("create_time")
+            messages.append({"speaker": role, "content": text, "created_at": datetime.fromtimestamp(created, timezone.utc).isoformat() if isinstance(created, (int, float)) else None})
+    return messages
+
+
+def parse_chatgpt_export(path: Path) -> list[dict[str, Any]]:
+    """Parse a ChatGPT data export (``conversations.json``) into one record per conversation."""
+    payload = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+    if not is_chatgpt_export(payload):
+        raise ValueError(f"不是 ChatGPT 导出的 conversations.json: {path}")
+    parsed = []
+    for conversation in payload if isinstance(payload, list) else [payload]:
+        messages = chatgpt_thread(conversation)
+        if not messages:
+            continue
+        source_id = str(conversation.get("conversation_id") or conversation.get("id") or "")
+        if not source_id:
+            continue
+        created = conversation.get("create_time")
+        title = (conversation.get("title") or "").strip() or re.sub(r"\s+", " ", messages[0]["content"])[:120]
+        parsed.append({"source_id": source_id, "title": redact_sensitive(title) or "未命名会话", "started_at": datetime.fromtimestamp(created, timezone.utc).isoformat() if isinstance(created, (int, float)) else messages[0]["created_at"], "messages": messages, "path": str(path)})
+    if not parsed:
+        raise ValueError(f"ChatGPT 导出中没有可导入的用户/助手消息: {path}")
+    return parsed
+
+
+def parse_file(path: Path, platform: str) -> list[dict[str, Any]]:
+    """Every supported source as a list of conversations (Agent files hold one, web exports many)."""
+    return parse_chatgpt_export(path) if platform == "ChatGPT" else [parse_conversation(path, platform)]
+
+
 def guess_course(text: str) -> str:
     lowered = text.lower()
     for course, terms in COURSE_RULES:
@@ -295,6 +400,14 @@ def ensure_tag(db: sqlite3.Connection, name: str) -> int:
     return int(db.execute("SELECT tag_id FROM tag WHERE owner_id=? AND tag_name=?", (DEMO_USER_ID, name)).fetchone()[0])
 
 
+def ensure_course(db: sqlite3.Connection, name: str) -> int:
+    row = db.execute("SELECT course_id FROM course WHERE course_name=?", (name,)).fetchone()
+    if row:
+        return int(row[0])
+    code = next(code for code in (f"C{n}" for n in itertools.count(1)) if not db.execute("SELECT 1 FROM course WHERE course_code=?", (code,)).fetchone())
+    return int(db.execute("INSERT INTO course(course_code, course_name) VALUES(?,?)", (code, name)).lastrowid)
+
+
 def source_row(db: sqlite3.Connection, platform: str) -> sqlite3.Row:
     return db.execute("SELECT * FROM conversation_source WHERE platform_name=?", (platform,)).fetchone()
 
@@ -302,6 +415,11 @@ def source_row(db: sqlite3.Connection, platform: str) -> sqlite3.Row:
 def import_file(path: Path, platform: str) -> dict[str, Any]:
     parsed = parse_conversation(path, platform)
     return import_parsed(parsed, platform)
+
+
+def import_export_file(path: Path, platform: str) -> list[dict[str, Any]]:
+    """Import every conversation in one file; each conversation is its own transaction."""
+    return [import_parsed(parsed, platform) for parsed in parse_file(path, platform)]
 
 
 def import_parsed(parsed: dict[str, Any], platform: str) -> dict[str, Any]:
@@ -322,9 +440,9 @@ def import_parsed(parsed: dict[str, Any], platform: str) -> dict[str, Any]:
         for tag_name in re.findall(r"#[\w\u4e00-\u9fff-]+", whole):
             tag_id = ensure_tag(db, tag_name[1:][:50])
             db.execute("INSERT OR IGNORE INTO conversation_tag VALUES(?,?)", (conversation_id, tag_id))
-        for point_name, terms in POINT_RULES:
+        for rule_course, point_name, terms in POINT_RULES:
             matched_terms = [term for term in terms if term.lower() in whole]
-            if matched_terms:
+            if matched_terms and rule_course == course_name:
                 point = db.execute("SELECT point_id FROM knowledge_point WHERE course_id=? AND point_name=?", (course[0], point_name)).fetchone()
                 if point:
                     db.execute("INSERT OR IGNORE INTO conversation_point(conversation_id,point_id,source,evidence,status) VALUES(?,?,?,?,?)", (conversation_id, point[0], "rule", json.dumps(matched_terms, ensure_ascii=False), "PROPOSED"))
@@ -403,7 +521,7 @@ def read_bundle(manifest_path: Path, annotations_path: Path) -> tuple[list[dict[
 
     def key(row: dict[str, Any]) -> tuple[str, str]:
         platform, source_id = row.get("platform"), row.get("source_id")
-        require(isinstance(platform, str) and platform in SOURCE_ROOTS, "快照包含不支持的来源平台")
+        require(isinstance(platform, str) and platform in PLATFORMS, "快照包含不支持的来源平台")
         require(isinstance(source_id, str) and bool(source_id.strip()), "快照的 source_id 必须是非空字符串")
         return platform, source_id
 
@@ -428,6 +546,7 @@ def read_bundle(manifest_path: Path, annotations_path: Path) -> tuple[list[dict[
             require(type(row.get(field)) is int and row[field] == count, f"会话的 {field} 与消息列表不一致")
         for field in ("tags", "knowledge_points"):
             require(string_list(row.get(field)), f"{field} 必须是不含重复项的非空字符串列表")
+        require(row.get("course") is None or (isinstance(row["course"], str) and bool(row["course"].strip())), "course 必须是非空字符串或省略")
 
     annotations: dict[tuple[str, str], dict[str, Any]] = {}
     for row in records(annotations_path):
@@ -476,8 +595,9 @@ def restore_bundled(manifest_path: Path | None = None, annotations_path: Path | 
                     result["summaries_added"] += 1
                 result["skipped"] += 1
             else:
-                course_name = guess_course(row["title"] + " " + " ".join(m["content"] for m in row["messages"][:10]))
-                course_id = db.execute("SELECT course_id FROM course WHERE course_name=?", (course_name,)).fetchone()[0]
+                # Newer snapshots carry the course; older ones are re-derived with the keyword rules.
+                course_name = row.get("course") or guess_course(row["title"] + " " + " ".join(m["content"] for m in row["messages"][:10]))
+                course_id = ensure_course(db, course_name)
                 job_id = db.execute("INSERT INTO import_job(owner_id,source_id,file_name,source_conversation_id,status,total_messages) VALUES(?,?,?,?,?,?) ON CONFLICT(owner_id,source_id,file_name,source_conversation_id) DO UPDATE SET status='SUCCESS',total_messages=excluded.total_messages RETURNING import_job_id", (DEMO_USER_ID, source["source_id"], str(manifest_path.resolve()), row["source_id"], "SUCCESS", len(row["messages"]))).fetchone()[0]
                 updated = next((m.get("created_at") for m in reversed(row["messages"]) if m.get("created_at")), None) or row.get("started_at") or now()
                 cursor = db.execute("INSERT INTO conversation(owner_id,course_id,source_id,import_job_id,source_conversation_id,title,summary,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (DEMO_USER_ID, course_id, source["source_id"], job_id, row["source_id"], row["title"], row["summary"], row.get("started_at"), updated))
@@ -501,6 +621,62 @@ def restore_bundled(manifest_path: Path | None = None, annotations_path: Path | 
             raise ValueError("恢复后的数据库完整性检查失败，整批恢复已回滚")
         result["counts"] = {table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("conversation", "message", "conversation_annotation", "conversation_tag", "conversation_point")}
         db.execute("INSERT INTO audit_log(actor_id,operation,table_name,after_data) VALUES(?,?,?,?)", (DEMO_USER_ID, "RESTORE_BUNDLED", "conversation", json.dumps(result, ensure_ascii=False)))
+    return result
+
+
+DEMO_ANCHOR = datetime(2026, 11, 13, 22, 0, tzinfo=timezone.utc)  # "today" of the simulated semester
+
+
+def seed_demo_activity(activity_path: Path | None = None) -> dict[str, Any]:
+    """Add the simulated semester of study work on top of the restored demo conversations.
+
+    Annotations, review cards, review history, favorites and reading positions come from
+    ``staging/demo_activity.jsonl``. Reviews are replayed through ``apply_review`` so every
+    card and log row obeys the real scheduler. All activity is shifted forward by whole days
+    so the simulated "today" lands on the real today and the due queue looks live. Runs once
+    per database (an audit_log marker guards it) and only touches the demo conversations.
+    """
+    activity_path = activity_path or BASE_DIR / "staging" / "demo_activity.jsonl"
+    rows = [json.loads(line) for line in activity_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    shift = timedelta(days=max(0, (datetime.now(timezone.utc) - DEMO_ANCHOR).days))
+    at = lambda text: datetime.fromisoformat(text.replace("Z", "+00:00")) + shift
+    result = {"annotations": 0, "review_cards": 0, "review_logs": 0, "favorites": 0, "reading_states": 0, "confirmed_points": 0, "shift_days": shift.days}
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if db.execute("SELECT 1 FROM audit_log WHERE operation='SEED_DEMO'").fetchone():
+            return {**result, "skipped": True}
+        for row in rows:
+            source = source_row(db, row["platform"])
+            conversation = db.execute("SELECT conversation_id FROM conversation WHERE owner_id=? AND source_id=? AND source_conversation_id=?", (DEMO_USER_ID, source["source_id"], row["source_id"])).fetchone()
+            if not conversation:
+                raise ValueError(f"演示活动引用的会话 {row['source_id']} 不存在，请先恢复附带数据")
+            cid = conversation[0]
+            message = {r["seq_no"]: r["message_id"] for r in db.execute("SELECT seq_no,message_id FROM message WHERE conversation_id=?", (cid,))}
+            for mark in row["marks"]:
+                resolved = mark.get("resolved_at")
+                db.execute("INSERT INTO annotation(message_id,author_id,annotation_type,content,is_resolved,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                           (message[mark["seq_no"]], DEMO_USER_ID, mark["type"], mark["content"], int(bool(resolved)), sql_time(at(mark["created_at"])), sql_time(at(resolved or mark["created_at"]))))
+                result["annotations"] += 1
+            for card in row["cards"]:
+                created = sql_time(at(card["created_at"]))
+                card_id = db.execute("INSERT INTO review_card(message_id,owner_id,question,answer,due_at,interval_days) VALUES(?,?,?,?,?,0) ON CONFLICT(owner_id,message_id) DO NOTHING RETURNING review_card_id",
+                                     (message[card["seq_no"]], DEMO_USER_ID, card["question"], card["answer"], created)).fetchone()
+                if not card_id:
+                    continue
+                result["review_cards"] += 1
+                for review in card["reviews"]:
+                    current = db.execute("SELECT * FROM review_card WHERE review_card_id=?", (card_id[0],)).fetchone()
+                    apply_review(db, current, review["grade"], at(review["at"]))
+                    result["review_logs"] += 1
+            if row.get("favorite") or row.get("last_opened_at"):
+                last = message.get(row.get("last_read_seq"))
+                db.execute("INSERT INTO conversation_state(owner_id,conversation_id,is_favorite,last_message_id,last_opened_at) VALUES(?,?,?,?,?) ON CONFLICT(owner_id,conversation_id) DO NOTHING",
+                           (DEMO_USER_ID, cid, int(bool(row.get("favorite"))), last, sql_time(at(row["last_opened_at"])) if row.get("last_opened_at") else None))
+                result["favorites"] += int(bool(row.get("favorite")))
+                result["reading_states"] += int(bool(row.get("last_opened_at")))
+            if row.get("confirm_point"):
+                result["confirmed_points"] += db.execute("UPDATE conversation_point SET status='CONFIRMED',confirmed_by=?,confirmed_at=? WHERE conversation_id=? AND status='PROPOSED'", (DEMO_USER_ID, sql_time(at(row["marks"][0]["created_at"] if row["marks"] else DEMO_ANCHOR.isoformat())), cid)).rowcount
+        db.execute("INSERT INTO audit_log(actor_id,operation,table_name,after_data) VALUES(?,?,?,?)", (DEMO_USER_ID, "SEED_DEMO", "annotation", json.dumps(result, ensure_ascii=False)))
     return result
 
 
@@ -801,7 +977,7 @@ def update_annotation(annotation_id: int, payload: AnnotationUpdate) -> dict[str
         if not content:
             raise HTTPException(400, "批注内容不能为空")
         resolved = int(payload.is_resolved) if payload.is_resolved is not None else row["is_resolved"]
-        updated = db.execute("UPDATE annotation SET content=?,is_resolved=?,updated_at=? WHERE annotation_id=? RETURNING *", (content, resolved, now(), annotation_id)).fetchone()
+        updated = db.execute("UPDATE annotation SET content=?,is_resolved=?,updated_at=? WHERE annotation_id=? RETURNING *", (content, resolved, sql_time(datetime.now(timezone.utc)), annotation_id)).fetchone()
         db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,before_data,after_data) VALUES(?,?,?,?,?,?)", (DEMO_USER_ID, "UPDATE", "annotation", annotation_id, json.dumps(dict(row), ensure_ascii=False), json.dumps(dict(updated), ensure_ascii=False)))
         return dict(updated)
 
@@ -899,6 +1075,38 @@ def create_review(payload: ReviewInput) -> dict[str, Any]:
         return dict(row)
 
 
+MIN_EASE = 1.3
+MAX_INTERVAL = 365
+
+
+def schedule_next(interval_days: int, streak: int, ease: float, grade: str) -> tuple[int, int, float]:
+    """SM-2 with a binary grade. Returns (next interval in days, consecutive-correct streak, ease factor).
+
+    A wrong answer brings the card back tomorrow and lowers its ease by 0.2 (floor 1.3), so a
+    card you keep missing grows its intervals more slowly for the rest of its life. The first
+    correct answer after a reset waits 3 days; later ones multiply the last interval by the ease.
+    """
+    if grade == "wrong":
+        return 1, 0, round(max(MIN_EASE, ease - 0.2), 2)
+    streak += 1
+    interval = 3 if streak == 1 else max(interval_days + 1, round(interval_days * ease))
+    return min(interval, MAX_INTERVAL), streak, ease
+
+
+def sql_time(moment: datetime) -> str:
+    """The format SQLite's CURRENT_TIMESTAMP uses, so stored times compare correctly as text."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def apply_review(db: sqlite3.Connection, card: sqlite3.Row, grade: str, at: datetime) -> dict[str, Any]:
+    """Grade one card at ``at``: update the card and append the matching review_log row."""
+    interval, streak, ease = schedule_next(card["interval_days"], card["review_count"], card["ease_factor"], grade)
+    due = sql_time(at + timedelta(days=interval))
+    db.execute("UPDATE review_card SET review_count=?,interval_days=?,ease_factor=?,lapse_count=lapse_count+?,due_at=?,last_reviewed_at=?,status='ACTIVE' WHERE review_card_id=?", (streak, interval, ease, int(grade == "wrong"), due, sql_time(at), card["review_card_id"]))
+    db.execute("INSERT INTO review_log(review_card_id,reviewed_at,grade,interval_before,interval_after,streak_before,streak_after,due_before,due_after,ease_before,ease_after) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (card["review_card_id"], sql_time(at), grade, card["interval_days"], interval, card["review_count"], streak, card["due_at"], due, card["ease_factor"], ease))
+    return dict(db.execute("SELECT * FROM review_card WHERE review_card_id=?", (card["review_card_id"],)).fetchone())
+
+
 @app.post("/api/reviews/{review_id}/complete")
 def complete_review(review_id: int, grade: str = Query(..., pattern="^(correct|wrong)$")) -> dict[str, Any]:
     with connect() as db:
@@ -908,15 +1116,7 @@ def complete_review(review_id: int, grade: str = Query(..., pattern="^(correct|w
             raise HTTPException(404, "复习卡不存在")
         if card["status"] != "ACTIVE":
             raise HTTPException(400, "该卡片已暂停或完成，请先恢复卡片")
-        intervals = [1, 3, 7, 14]
-        previous_due = card["due_at"]
-        previous_interval = card["interval_days"]
-        next_count = card["review_count"] + 1 if grade == "correct" else 0
-        interval = intervals[min(next_count, len(intervals) - 1)]
-        db.execute("UPDATE review_card SET review_count=?,interval_days=?,due_at=datetime('now',?),last_reviewed_at=datetime('now'),status='ACTIVE' WHERE review_card_id=?", (next_count, interval, f"+{interval} day", review_id))
-        updated = dict(db.execute("SELECT * FROM review_card WHERE review_card_id=?", (review_id,)).fetchone())
-        db.execute("INSERT INTO review_log(review_card_id,grade,interval_before,interval_after,streak_before,streak_after,due_before,due_after) VALUES(?,?,?,?,?,?,?,?)", (review_id, grade, card["interval_days"], updated["interval_days"], card["review_count"], updated["review_count"], card["due_at"], updated["due_at"]))
-        return updated
+        return apply_review(db, card, grade, datetime.now(timezone.utc))
 
 
 @app.get("/api/reviews/history")
@@ -1022,6 +1222,12 @@ app.include_router(create_router(sys.modules[__name__]))
 import text2sql
 app.include_router(text2sql.create_router(sys.modules[__name__]))
 
+import errorbook
+app.include_router(errorbook.create_router(sys.modules[__name__]))
+
+import classify
+app.include_router(classify.create_router(sys.modules[__name__]))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -1029,10 +1235,19 @@ if __name__ == "__main__":
     actions.add_argument("--init", action="store_true")
     actions.add_argument("--import-local", action="store_true")
     actions.add_argument("--restore-bundled", action="store_true", help="从附带的最终 JSONL 恢复全部会话和标注")
+    actions.add_argument("--demo", action="store_true", help="恢复附带会话，并加上一学期的模拟学习记录（批注、复习卡、复习历史）")
+    actions.add_argument("--import-file", metavar="PATH", help="导入单个会话文件，例如 ChatGPT 导出的 conversations.json")
+    parser.add_argument("--platform", default="ChatGPT", choices=sorted(PLATFORMS), help="--import-file 的来源平台")
     args = parser.parse_args()
     try:
         if args.restore_bundled:
             output = restore_bundled()
+        elif args.demo:
+            output = {"restore": restore_bundled(), "activity": seed_demo_activity()}
+        elif args.import_file:
+            init_db()
+            results = import_export_file(Path(args.import_file), args.platform)
+            output = {"imported": sum(r["status"] == "SUCCESS" for r in results), "skipped": sum(r["status"] == "SKIPPED" for r in results), "results": results}
         else:
             init_db()
             output = {"results": scan_and_import()} if args.import_local else {"database": str(DB_PATH), "initialized": True}

@@ -7,9 +7,17 @@ const state = {view: 'library', selected: null, offset: 0, limit: 20, total: 0, 
 async function api(url, options) {
   const response = await fetch(url, options);
   if (!response.ok) {
-    let message = `请求失败（${response.status}）`;
-    try { const error = await response.json(); if (typeof error.detail === 'string') message = error.detail; } catch {}
-    throw new Error(message);
+    let message = `请求失败（${response.status}）`, detail = null;
+    try {
+      const error = await response.json();
+      detail = error.detail ?? null;
+      if (typeof detail === 'string') message = detail;
+      else if (detail && typeof detail.message === 'string') message = detail.message;
+    } catch {}
+    const problem = new Error(message);
+    problem.status = response.status;
+    problem.detail = detail;
+    throw problem;
   }
   return response.json();
 }
@@ -105,10 +113,11 @@ async function switchView(view) {
   state.view = view;
   $$('.view').forEach(element => element.classList.toggle('hidden', element.id !== view));
   $$('.nav').forEach(element => element.classList.toggle('active', element.dataset.view === view));
-  $('#page-title').textContent = {overview: '学习总览', library: '会话库', review: '复习队列', stats: '数据统计', ask: '问答查询', todos: '学习待办', data: '导入与备份'}[view];
+  $('#page-title').textContent = {overview: '学习总览', library: '会话库', review: '复习队列', stats: '数据统计', vocab: '主题词库', ask: '问答查询', todos: '学习待办', data: '导入与备份'}[view];
   if (view === 'library') await loadConversations();
   if (view === 'review') await Promise.all([loadReviews(), loadReviewHistory(), window.usability?.loadCards()]);
   if (view === 'stats') await loadStats();
+  if (view === 'vocab') await window.vocabulary?.load();
   if (view === 'ask') await window.askData?.load();
   if (view === 'overview') await loadSummary();
   if (view === 'todos') await window.usability.loadTodos();
@@ -187,11 +196,22 @@ async function loadConversations() {
 const POINT_STATUS = {PROPOSED: '待确认', CONFIRMED: '已确认', REJECTED: '已拒绝'};
 function pointChip(point) {
   const status = point.status || 'CONFIRMED';
-  const actions = status === 'PROPOSED' ? `<button class="text-button point-decision" type="button" data-point="${point.point_id}" data-status="CONFIRMED">确认</button><button class="text-button point-decision" type="button" data-point="${point.point_id}" data-status="REJECTED">拒绝</button>` : '';
-  return `<span class="point-chip ${status.toLowerCase()}">${escapeHtml(point.point_name)} · ${POINT_STATUS[status] || status}${actions}</span>`;
+  const actions = (status === 'PROPOSED' ? `<button class="text-button point-decision" type="button" data-point="${point.point_id}" data-status="CONFIRMED">确认</button><button class="text-button point-decision" type="button" data-point="${point.point_id}" data-status="REJECTED">拒绝</button>` : '') +
+    `<button class="text-button point-remove" type="button" data-point="${point.point_id}">移除</button>`;
+  return `<span class="point-chip ${status.toLowerCase()}"><button class="text-button point-notes-link" type="button" data-point="${point.point_id}" title="查看该知识点的汇总笔记">${escapeHtml(point.point_name)}</button> · ${POINT_STATUS[status] || status}${actions}</span>`;
 }
 const TODO_TYPES = new Set(['QUESTION', 'CORRECTION', 'IMPORTANT']);
+const NOTE_TYPE_LABELS = {NOTE: '笔记', QUESTION: '疑问', CORRECTION: '纠错', IMPORTANT: '重点'};
 function jsonList(value) { try { const result = JSON.parse(value || '[]'); return Array.isArray(result) ? result : []; } catch { return []; } }
+function pointChoiceList(points, selected = []) {
+  const chosen = new Set((selected || []).map(Number));
+  if (!points.length) return '<span class="muted">本课程暂无知识点</span>';
+  return points.map(point => `<label class="point-choice"><input type="checkbox" name="point_ids" value="${point.point_id}" ${chosen.has(Number(point.point_id)) ? 'checked' : ''}> ${escapeHtml(point.point_name)}</label>`).join('');
+}
+function annotationPointSummary(points) {
+  if (!points?.length) return '<div class="annotation-points muted">未关联知识点</div>';
+  return `<div class="annotation-points">知识点：${points.map(point => `<button type="button" class="text-button note-point-link" data-point="${point.point_id}" title="查看该知识点的汇总笔记">${escapeHtml(point.point_name)}</button>`).join('、')}</div>`;
+}
 async function openConversation(id, focusMessageId = null) {
   const sequence = ++state.detailSeq;
   state.selected = String(id);
@@ -203,10 +223,24 @@ async function openConversation(id, focusMessageId = null) {
     const data = await api(`/api/conversations/${id}`);
     if (sequence !== state.detailSeq) return;
     const conversation = data.conversation, manual = data.manual_annotation;
-    const manualHtml = manual ? `<div class="manual-review"><strong>会话深读标注</strong><p>${escapeHtml(manual.summary_manual)}</p><div class="meta">意图：${escapeHtml(manual.intent)} · 质量：${escapeHtml(manual.quality)} · 置信度：${escapeHtml(manual.confidence)}</div><p>主题：${jsonList(manual.topics_json).map(escapeHtml).join('、') || '无'}<br>关键点：${jsonList(manual.key_points_json).map(escapeHtml).join('；') || '无'}<br>未解决：${jsonList(manual.unresolved_questions_json).map(escapeHtml).join('；') || '无'}<br>待办：${jsonList(manual.action_items_json).map(escapeHtml).join('；') || '无'}</p></div>` : '';
-    $('#detail').innerHTML = `<div class="panel-head"><div><p class="eyebrow">${escapeHtml(conversation.platform_name)} · ${escapeHtml(conversation.course_name)}</p><h2>${escapeHtml(conversation.title)}</h2><p class="muted">原始会话 ID：${escapeHtml(conversation.source_conversation_id)}</p></div><span class="pill">${data.messages.length} 条消息</span></div>${manualHtml}<div class="detail-summary"><strong>结构化摘要</strong><p>${escapeHtml(conversation.summary || '暂无摘要')}</p></div><div class="meta detail-meta">知识点：${data.points.map(pointChip).join('') || '待归类'}　标签：${(data.tags || []).map(escapeHtml).join('、') || '暂无'}</div><div>${data.messages.map(message => `<section class="message ${message.speaker}" data-message-id="${message.message_id}"><div class="speaker">${message.speaker === 'user' ? '你' : 'AI'} · #${message.seq_no}</div><div class="message-content">${escapeHtml(message.content)}</div>${message.annotations.map(note => `<div class="annotation${note.is_resolved ? ' resolved' : ''}"><strong>${escapeHtml(note.annotation_type)}</strong> · ${escapeHtml(note.content)}${TODO_TYPES.has(note.annotation_type) ? ` <button class="small-button resolve-annotation" type="button" data-annotation="${note.annotation_id}" data-resolved="${note.is_resolved ? 1 : 0}" data-message="${message.message_id}">${note.is_resolved ? '重新打开' : '标记解决'}</button>` : ''}</div>`).join('')}<form class="annotation-form" data-message="${message.message_id}"><select aria-label="批注类型"><option value="NOTE">笔记</option><option value="QUESTION">疑问</option><option value="CORRECTION">纠错</option><option value="IMPORTANT">重点</option></select><input aria-label="批注内容" placeholder="为这条消息添加批注" required><button class="small-button" type="submit">保存批注</button></form><div class="review-entry">${message.review_card ? '<span class="pill added-review">已加入复习</span>' : `<button class="small-button add-review" type="button">加入复习</button><form class="review-form hidden" data-message="${message.message_id}"><label>复习问题<textarea name="question" required placeholder="你希望复习什么问题？"></textarea></label><label>参考答案<textarea name="answer" required>${escapeHtml(message.content)}</textarea></label><p class="muted">保存后立即加入待复习队列。</p><button class="button" type="submit">创建复习卡</button></form>`}</div></section>`).join('')}</div>`;
+    const coursePoints = await api(`/api/knowledge-points?course_id=${conversation.course_id}`);
+    if (sequence !== state.detailSeq) return;
+    const topics = manual ? jsonList(manual.topics_json) : [];
+    const manualHtml = manual ? `<div class="manual-review"><strong>会话深读标注（附带标注快照，只读）</strong><p>${escapeHtml(manual.summary_manual)}</p><div class="meta">意图：${escapeHtml(manual.intent)} · 质量：${escapeHtml(manual.quality)} · 置信度：${escapeHtml(manual.confidence)}</div><p>主题：${topics.length ? topics.map(topic => `<span class="topic-chip">${escapeHtml(topic)}<button type="button" class="text-button adopt-topic" data-topic="${escapeHtml(topic)}" title="把该主题带入标签编辑器">加入标签</button></span>`).join('') : '无'}<br>关键点：${jsonList(manual.key_points_json).map(escapeHtml).join('；') || '无'}<br>未解决：${jsonList(manual.unresolved_questions_json).map(escapeHtml).join('；') || '无'}<br>待办：${jsonList(manual.action_items_json).map(escapeHtml).join('；') || '无'}</p></div>` : '';
+    $('#detail').innerHTML = `<div class="panel-head"><div><p class="eyebrow">${escapeHtml(conversation.platform_name)} · ${escapeHtml(conversation.course_name)}</p><h2>${escapeHtml(conversation.title)}</h2><p class="muted">原始会话 ID：${escapeHtml(conversation.source_conversation_id)}</p></div><span class="pill">${data.messages.length} 条消息</span></div>${manualHtml}<div class="detail-summary"><strong>结构化摘要</strong><p>${escapeHtml(conversation.summary || '暂无摘要')}</p></div><div class="meta detail-meta">知识点：${data.points.map(pointChip).join('') || '待归类'}　标签：${(data.tags || []).map(escapeHtml).join('、') || '暂无'}</div><div class="vocab-editors"><section class="vocab-editor-block"><div class="vocab-editor-head"><h3>标签</h3><button type="button" class="text-button" data-vocab-link="tags">管理词库 →</button></div><div id="tag-editor"></div></section><section class="vocab-editor-block"><div class="vocab-editor-head"><h3>知识点</h3><button type="button" class="text-button" data-vocab-link="points">管理词库 →</button></div><div id="point-editor"></div></section></div><div>${data.messages.map(message => `<section class="message ${message.speaker}" data-message-id="${message.message_id}"><div class="speaker">${message.speaker === 'user' ? '你' : 'AI'} · #${message.seq_no}</div><div class="message-content">${escapeHtml(message.content)}</div>${message.annotations.map(note => `<div class="annotation${note.is_resolved ? ' resolved' : ''}"><strong>${escapeHtml(NOTE_TYPE_LABELS[note.annotation_type] || note.annotation_type)}</strong> · ${escapeHtml(note.content)}${TODO_TYPES.has(note.annotation_type) ? ` <button class="small-button resolve-annotation" type="button" data-annotation="${note.annotation_id}" data-resolved="${note.is_resolved ? 1 : 0}" data-message="${message.message_id}">${note.is_resolved ? '重新打开' : '标记解决'}</button>` : ''}${annotationPointSummary(note.points)}<details class="annotation-point-edit"><summary>调整关联知识点</summary><form class="annotation-points-form" data-annotation="${note.annotation_id}"><div class="point-choice-list">${pointChoiceList(coursePoints, (note.points || []).map(point => point.point_id))}</div><button class="small-button" type="submit">保存关联</button></form></details></div>`).join('')}<form class="annotation-form" data-message="${message.message_id}"><select aria-label="批注类型"><option value="NOTE">笔记</option><option value="QUESTION">疑问</option><option value="CORRECTION">纠错</option><option value="IMPORTANT">重点</option></select><input aria-label="批注内容" placeholder="为这条消息添加批注" required><details class="annotation-point-edit"><summary>关联知识点（可多选）</summary><div class="point-choice-list">${pointChoiceList(coursePoints)}</div></details><button class="small-button" type="submit">保存批注</button></form><div class="review-entry">${message.review_card ? '<span class="pill added-review">已加入复习</span>' : `<button class="small-button add-review" type="button">加入复习</button><form class="review-form hidden" data-message="${message.message_id}"><label>复习问题<textarea name="question" required placeholder="你希望复习什么问题？"></textarea></label><label>参考答案<textarea name="answer" required>${escapeHtml(message.content)}</textarea></label><p class="muted">保存后立即加入待复习队列。</p><button class="button" type="submit">创建复习卡</button></form>`}</div></section>`).join('')}</div>`;
     $$('#detail .message-content').forEach(element => { StudyRender.render(element, element.textContent, state.searchQuery); });
-    $('#detail .detail-summary').insertAdjacentHTML('afterend', `<details class="curation-editor"><summary>编辑整理信息</summary><form id="curation-form"><label>课程<select name="course_id">${state.courses.map(course => `<option value="${course.course_id}" ${course.course_id === conversation.course_id ? 'selected' : ''}>${escapeHtml(course.course_name)}</option>`).join('')}</select></label><label>摘要<textarea name="summary" required>${escapeHtml(conversation.summary || '')}</textarea></label><label>标签<input name="tags" value="${escapeHtml((data.tags || []).join('、'))}" placeholder="用逗号或顿号分隔；留空可清除标签"></label><button class="button" type="submit">保存整理</button></form></details><p class="curation-provenance muted">${data.curation ? `人工整理：${escapeHtml(data.curation.actor_name)} · ${escapeHtml(data.curation.created_at)} UTC` : '整理信息来源：导入规则或历史快照；可人工修订。'}</p>`);
+    window.vocabulary?.mountTagEditor($('#tag-editor'), id, data.tag_items || [], () => openConversation(id));
+    window.vocabulary?.mountPointEditor($('#point-editor'), id, conversation.course_id, data.points || [], () => openConversation(id));
+    $$('#detail [data-vocab-link]').forEach(button => button.onclick = run(async () => {
+      await switchView('vocab');
+      await window.vocabulary?.selectTab(button.dataset.vocabLink, conversation.course_id);
+    }));
+    $$('#detail .adopt-topic').forEach(button => button.onclick = () => {
+      window.vocabulary?.focusTag(button.dataset.topic);
+      toast(`已把主题「${button.dataset.topic}」带入标签编辑器；可先选已有标签，再决定是否新建`);
+    });
+    $('#detail .detail-summary').insertAdjacentHTML('afterend', `<details class="curation-editor"><summary>编辑整理信息</summary><form id="curation-form"><label>课程<select name="course_id">${state.courses.map(course => `<option value="${course.course_id}" ${course.course_id === conversation.course_id ? 'selected' : ''}>${escapeHtml(course.course_name)}</option>`).join('')}</select></label><label>摘要<textarea name="summary" required>${escapeHtml(conversation.summary || '')}</textarea></label><label>标签<input name="tags" list="tag-vocabulary" value="${escapeHtml((data.tags || []).join('、'))}" placeholder="用逗号或顿号分隔；留空可清除标签"><span id="curation-tag-hint" class="field-hint">输入时显示已有标签；完全同名会复用，相近名称会提示。</span></label><label class="inline-check"><input type="checkbox" name="tags_allow_similar"> 允许创建与已有标签相近的新标签</label><button class="button" type="submit">保存整理</button></form></details><p class="curation-provenance muted">${data.curation ? `人工整理：${escapeHtml(data.curation.actor_name)} · ${escapeHtml(data.curation.created_at)} UTC` : '整理信息来源：导入规则或历史快照；可人工修订。'}</p>`);
+    window.vocabulary?.wireCurationInput($('#curation-form'));
     $('#curation-form').onsubmit = run(async event => {
       event.preventDefault();
       const form = event.currentTarget;
@@ -215,28 +249,60 @@ async function openConversation(id, focusMessageId = null) {
       const tags = [...new Set(form.elements.tags.value.split(/[,，、\n]/).map(value => value.trim()).filter(Boolean))];
       const button = form.querySelector('button'); button.disabled = true;
       try {
-        await api(`/api/conversations/${id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({course_id: Number(form.elements.course_id.value), summary, tags})});
+        await api(`/api/conversations/${id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({course_id: Number(form.elements.course_id.value), summary, tags, tags_allow_similar: form.elements.tags_allow_similar.checked})});
+        window.vocabulary?.refreshTagVocabulary();
         await loadConversations();
         if (state.selected === String(id)) await openConversation(id);
         await loadSummary(); toast('整理信息已保存；原始问答保持不变');
+      } catch (error) {
+        if (error.status === 409) {
+          form.elements.tags_allow_similar.checked = false;
+          $('#curation-tag-hint').textContent = `${error.message} 如确需保留新名称，请勾选“允许创建与已有标签相近的新标签”后重试。`;
+        }
+        throw error;
       } finally { button.disabled = false; }
     });
     $$('.annotation-form').forEach(form => form.onsubmit = run(async event => {
       event.preventDefault();
       const content = form.querySelector('input').value.trim();
       if (!content) throw new Error('批注内容不能为空');
+      const point_ids = [...form.querySelectorAll('input[name="point_ids"]:checked')].map(input => Number(input.value));
       const button = form.querySelector('button'); button.disabled = true;
       try {
-        await post('/api/annotations', {message_id: Number(form.dataset.message), annotation_type: form.querySelector('select').value, content});
+        await post('/api/annotations', {message_id: Number(form.dataset.message), annotation_type: form.querySelector('select').value, content, point_ids});
         if (state.selected === String(id)) await openConversation(id, form.dataset.message);
         await loadSummary(); toast('批注已保存');
       } finally { button.disabled = false; }
+    }));
+    $$('.annotation-points-form').forEach(form => form.onsubmit = run(async event => {
+      event.preventDefault();
+      const point_ids = [...form.querySelectorAll('input[name="point_ids"]:checked')].map(input => Number(input.value));
+      const button = form.querySelector('button'); button.disabled = true;
+      try {
+        await api(`/api/annotations/${form.dataset.annotation}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({point_ids})});
+        if (state.selected === String(id)) await openConversation(id);
+        toast(point_ids.length ? `已关联 ${point_ids.length} 个知识点` : '已清除该批注的知识点关联');
+      } finally { button.disabled = false; }
+    }));
+    $$('.note-point-link').forEach(button => button.onclick = run(async () => {
+      await switchView('vocab');
+      await window.vocabulary?.openPointNotes(button.dataset.point);
     }));
     $$('.point-decision').forEach(button => button.onclick = run(async () => {
       button.disabled = true;
       await post(`/api/conversations/${id}/points/${button.dataset.point}`, {status: button.dataset.status});
       if (state.selected === String(id)) await openConversation(id);
       toast(button.dataset.status === 'CONFIRMED' ? '知识点已确认' : '知识点已拒绝');
+    }));
+    $$('.point-remove').forEach(button => button.onclick = run(async () => {
+      button.disabled = true;
+      await api(`/api/conversations/${id}/points/${button.dataset.point}`, {method: 'DELETE'});
+      if (state.selected === String(id)) await openConversation(id);
+      toast('已从本会话移除该知识点；词库中的知识点仍保留');
+    }));
+    $$('.point-notes-link').forEach(button => button.onclick = run(async () => {
+      await switchView('vocab');
+      await window.vocabulary?.openPointNotes(button.dataset.point);
     }));
     $$('.resolve-annotation').forEach(button => button.onclick = run(async () => {
       button.disabled = true;

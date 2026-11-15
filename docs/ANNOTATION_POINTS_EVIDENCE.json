@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "dataset": "5 controlled fixture conversations; not the bundled historical corpus",
+  "javascript_errors": [],
+  "checks": [
+    "message note saves two direct point links",
+    "knowledge point page aggregates a message note and an independent note",
+    "independent note can be edited in place",
+    "message note jumps back to the source message"
+  ],
+  "screenshots": [
+    "01-note-point-link.png",
+    "02-point-notes.png"
+  ]
+}

@@ -97,7 +97,7 @@
     pager('cards', data);
   }
   function describeCounts(counts) {
-    const names = {conversation:'会话',message:'消息',annotation:'消息批注',review_card:'复习卡',review_log:'复习记录',conversation_state:'收藏与阅读记录',user_preference:'界面设置'};
+    const names = {conversation:'会话',message:'消息',annotation:'消息批注',annotation_point:'笔记知识点关联',point_note:'知识点独立笔记',review_card:'复习卡',review_log:'复习记录',conversation_state:'收藏与阅读记录',user_preference:'界面设置'};
     return `<dl class="backup-counts">${Object.entries(counts).map(([key,value]) => `<div><dt>${names[key] || escapeHtml(key)}</dt><dd>${value}</dd></div>`).join('')}</dl>`;
   }
   $('#favorites-only').onchange = run(async () => { state.offset = 0; await loadConversations(); });

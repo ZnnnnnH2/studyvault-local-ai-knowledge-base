@@ -16,6 +16,7 @@
       <button class="nav active" data-view="library">会话库</button>
       <button class="nav" data-view="review">复习</button>
       <button class="nav" data-view="stats">统计</button>
+      <button class="nav" data-view="vocab">词库</button>
       <button class="nav" data-view="ask">问答</button>
       <button class="nav" data-view="todos">待办</button>
       <button class="nav" data-view="data">导入</button>
@@ -83,6 +84,58 @@
     </article>
   </section>
 
+  <section id="vocab" class="view hidden">
+    <div id="vocab-main">
+      <div class="toolbar">
+        <div class="segmented" role="tablist" aria-label="词库类型">
+          <button type="button" class="segmented-button active" data-vocab-kind="tags" role="tab" aria-selected="true">标签</button>
+          <button type="button" class="segmented-button" data-vocab-kind="points" role="tab" aria-selected="false">知识点</button>
+        </div>
+        <div class="search"><span>⌕</span><input id="vocab-query" maxlength="50" aria-label="搜索已有词汇" placeholder="搜索已有标签或知识点…"></div>
+        <select id="vocab-course" class="hidden" aria-label="知识点课程"><option value="">全部课程</option></select>
+      </div>
+      <article class="panel vocab-panel">
+        <div class="panel-head">
+          <div>
+            <h2 id="vocab-title">标签词库</h2>
+            <p id="vocab-description" class="muted">输入时先看已有词汇；相近名称会提示，避免“外键”“外键约束”各自成词。</p>
+          </div>
+          <span class="pill" id="vocab-count">0 个</span>
+        </div>
+        <p class="vocab-note muted">深读标注中的“主题”来自附带标注，仍是只读；在会话详情点“加入标签”后，才按标签词库规则处理。</p>
+        <form id="vocab-create-form" class="vocab-create-form">
+          <input id="vocab-create-name" maxlength="50" required aria-label="新词汇名称" placeholder="输入新标签…">
+          <button class="button" type="submit">新建标签</button>
+        </form>
+        <div id="vocab-create-conflict" class="vocab-conflict hidden" role="alert"></div>
+        <div id="vocab-list" class="vocab-list" aria-live="polite"></div>
+      </article>
+    </div>
+
+    <div id="point-notes-view" class="hidden">
+      <article class="panel point-notes-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow" id="point-notes-eyebrow">知识点</p>
+            <h2 id="point-notes-title">知识点笔记</h2>
+            <p class="muted" id="point-notes-summary"></p>
+          </div>
+          <button class="small-button" id="point-notes-back" type="button">← 返回词库</button>
+        </div>
+        <form id="point-note-form" class="point-note-form">
+          <label>写一条独立笔记（不依赖某条消息）<textarea id="point-note-content" maxlength="4000" required placeholder="记录这个概念的理解、例子或待解决问题…"></textarea></label>
+          <button class="button" type="submit">保存独立笔记</button>
+        </form>
+        <div id="point-note-list" class="point-note-list"></div>
+        <div class="pagination">
+          <button id="point-notes-previous" class="small-button" type="button" disabled>上一页</button>
+          <span id="point-notes-info" aria-live="polite"></span>
+          <button id="point-notes-next" class="small-button" type="button" disabled>下一页</button>
+        </div>
+      </article>
+    </div>
+  </section>
+
   <section id="stats" class="view hidden">
     <p id="review-stats" class="review-stats"></p>
     <div class="grid three">
@@ -118,12 +171,14 @@ GROUP BY co.course_id;</pre><p class="muted">统计来自当前数据库。顶�
   </section>
 </main>
 <div id="toast" class="toast" role="status"></div>
+<datalist id="tag-vocabulary"></datalist>
 <script src="/static/vendor/marked/marked.umd.js"></script>
 <script src="/static/vendor/dompurify/purify.min.js"></script>
 <script src="/static/vendor/katex/katex.min.js"></script>
 <script src="/static/render.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/usability.js"></script>
+<script src="/static/vocabulary.js"></script>
 <script src="/static/text2sql.js"></script>
 </body>
 </html>

@@ -40,7 +40,7 @@ async def check(browser, url):
     form = page.locator('#curation-form')
     await form.locator('[name="course_id"]').select_option(label='程序设计与工程实践')
     await form.locator('[name="summary"]').fill('人工确认：本条学习资料说明外键如何维护参照完整性。')
-    await form.locator('[name="tags"]').fill('已确认、数据库基础')
+    await form.locator('[name="tags"]').fill('已确认、错题整理')
     await form.locator('button').click()
     await expect(page.locator('.curation-provenance')).to_contain_text('人工整理')
     await expect(page.locator('#detail .detail-summary')).to_contain_text('人工确认')

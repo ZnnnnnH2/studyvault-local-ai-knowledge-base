@@ -27,11 +27,14 @@ erDiagram
   APP_USER ||--o{ CONVERSATION : owns
   APP_USER ||--o{ TAG : owns
   APP_USER ||--o{ ANNOTATION : writes
+  APP_USER ||--o{ POINT_NOTE : writes
   APP_USER ||--o{ REVIEW_CARD : reviews
   APP_USER ||--o{ AUDIT_LOG : performs
   COURSE ||--o{ CONVERSATION : contains
   COURSE ||--o{ KNOWLEDGE_POINT : organizes
   KNOWLEDGE_POINT o|--o{ KNOWLEDGE_POINT : parent_of
+  KNOWLEDGE_POINT ||--o{ KNOWLEDGE_POINT_ALIAS : retains
+  TAG ||--o{ TAG_ALIAS : retains
   CONVERSATION_SOURCE ||--o{ IMPORT_JOB : records
   CONVERSATION_SOURCE ||--o{ CONVERSATION : comes_from
   IMPORT_JOB ||--o{ CONVERSATION : creates
@@ -42,6 +45,9 @@ erDiagram
   CONVERSATION ||--o{ CONVERSATION_POINT : covers
   KNOWLEDGE_POINT ||--o{ CONVERSATION_POINT : relates
   MESSAGE ||--o{ ANNOTATION : receives
+  ANNOTATION ||--o{ ANNOTATION_POINT : discusses
+  KNOWLEDGE_POINT ||--o{ ANNOTATION_POINT : cited_by
+  KNOWLEDGE_POINT ||--o{ POINT_NOTE : owns
   MESSAGE ||--o{ REVIEW_CARD : becomes
   REVIEW_CARD ||--o{ REVIEW_LOG : records
   APP_USER ||--o{ CONVERSATION_STATE : saves
@@ -74,6 +80,18 @@ erDiagram
     TEXT annotation_type
     TEXT content
   }
+  ANNOTATION_POINT {
+    INTEGER annotation_id PK
+    INTEGER point_id PK
+    TEXT created_at
+  }
+  POINT_NOTE {
+    INTEGER point_note_id PK
+    INTEGER point_id FK
+    INTEGER author_id FK
+    TEXT content
+    TEXT created_at
+  }
   REVIEW_CARD {
     INTEGER review_card_id PK
     INTEGER message_id FK
@@ -87,7 +105,7 @@ erDiagram
 
 ### 2.2 关系模式与数据字典
 
-基础 15 张表及附加的复习日志、阅读状态、偏好表的完整 DDL 见 [schema.sql](../schema.sql)。当前共 18 张表；`app.py:SCHEMA` 直接读取该文件，`init_db()` 执行同一份定义。
+基础 15 张表及附加的复习日志、阅读状态、偏好表、词库别名表、笔记知识点关联表的完整 DDL 见 [schema.sql](../schema.sql)。当前共 22 张表（20 张主表 + `tag_alias`、`knowledge_point_alias` 两张词库别名表）；`app.py:SCHEMA` 直接读取该文件，`init_db()` 执行同一份定义。
 
 | 表 | 字段 | 主键、外键和主要约束 |
 | --- | --- | --- |
@@ -95,28 +113,32 @@ erDiagram
 | `app_user` | user_id、role_id、username、display_name、status、created_at | PK user_id；FK role_id → app_role；username 唯一；status 限 ACTIVE/DISABLED。 |
 | `course` | course_id、course_code、course_name、term、instructor_name、description、status、created_at | PK course_id；course_code 唯一；status 限 ACTIVE/ARCHIVED。 |
 | `knowledge_point` | point_id、course_id、parent_id、point_name、description、level_no | PK point_id；FK course_id → course、parent_id → 本表；UNIQUE(course_id,point_name)；level_no > 0。 |
+| `knowledge_point_alias` | alias_id、course_id、alias_name、point_id、created_at | PK alias_id；FK course_id → course、point_id → knowledge_point；UNIQUE(course_id,alias_name)；保存重命名/合并后的旧名，恢复时仍指向存活知识点。 |
 | `conversation_source` | source_id、platform_name、source_type、source_path | PK source_id；UNIQUE(platform_name,source_type)。 |
 | `import_job` | import_job_id、owner_id、source_id、file_name、source_conversation_id、status、total_messages、error_message、created_at | PK import_job_id；FK owner_id/source_id；UNIQUE(owner_id,source_id,file_name,source_conversation_id)；状态限 SUCCESS/SKIPPED/FAILED。 |
 | `conversation` | conversation_id、owner_id、course_id、source_id、import_job_id、source_conversation_id、title、summary、visibility、started_at、updated_at | PK conversation_id；四个 FK 指向用户/课程/来源/导入；UNIQUE(owner_id,source_id,source_conversation_id)；visibility 限 PRIVATE/SHARED。 |
 | `message` | message_id、conversation_id、seq_no、speaker、content、created_at | PK message_id；FK conversation_id；UNIQUE(conversation_id,seq_no)；speaker 限 user/assistant/system。 |
 | `tag` | tag_id、owner_id、tag_name | PK tag_id；FK owner_id；UNIQUE(owner_id,tag_name)。 |
+| `tag_alias` | alias_id、owner_id、alias_name、tag_id、created_at | PK alias_id；FK owner_id → app_user、tag_id → tag；UNIQUE(owner_id,alias_name)；保存重命名/合并后的旧名。 |
 | `conversation_tag` | conversation_id、tag_id | 复合 PK；两个 FK，表达会话与标签的多对多关系。 |
-| `conversation_point` | conversation_id、point_id、confidence、source | 复合 PK；两个 FK；confidence 在 [0,1] 内。 |
+| `conversation_point` | conversation_id、point_id、confidence、source、status、evidence、confirmed_by、confirmed_at | 复合 PK；两个 FK；confidence 在 [0,1] 内；status 限 PROPOSED/CONFIRMED/REJECTED，保存确认人和确认时间。 |
 | `conversation_annotation` | annotation_id、conversation_id、summary_manual、intent、topics_json、key_points_json、unresolved_questions_json、action_items_json、quality、confidence、created_at、updated_at | PK annotation_id；FK conversation_id 且唯一；quality 限有效/混合/低价值，confidence 限 high/medium/low。 |
 | `annotation` | annotation_id、message_id、author_id、annotation_type、content、is_resolved、created_at、updated_at | PK annotation_id；FK message_id/author_id；类型限 NOTE/QUESTION/CORRECTION/IMPORTANT；is_resolved 为 0/1。 |
+| `annotation_point` | annotation_id、point_id、created_at | 复合 PK；FK annotation_id → annotation、point_id → knowledge_point；一条消息笔记可直接关联多个知识点，原消息仍是依据。 |
+| `point_note` | point_note_id、point_id、author_id、content、created_at、updated_at | PK point_note_id；FK point_id → knowledge_point、author_id → app_user；知识点页直接写下的独立笔记，不依赖消息。 |
 | `review_card` | review_card_id、message_id、owner_id、question、answer、due_at、interval_days、review_count、status、last_reviewed_at | PK review_card_id；FK message_id/owner_id；UNIQUE(owner_id,message_id)；状态限 ACTIVE/SUSPENDED/COMPLETED。 |
 | `audit_log` | audit_id、actor_id、operation、table_name、record_id、before_data、after_data、created_at | PK audit_id；FK actor_id；保存导入、恢复和批注操作的审计数据。 |
 | `review_log` | review_log_id、review_card_id、reviewed_at、grade、interval_before、interval_after、streak_before、streak_after、due_before、due_after | PK review_log_id；FK review_card_id → review_card；grade 限 correct/wrong；逐次保留复习前后状态。 |
 | `conversation_state` | owner_id、conversation_id、is_favorite、last_message_id、last_opened_at | 复合 PK owner_id/conversation_id；FK 到用户/会话/消息；保存收藏与阅读进度。 |
 | `user_preference` | user_id、library_state | PK/FK user_id → app_user；保存筛选、页码、会话及上次视图。 |
 
-会话删除时，其消息、关联表和会话标注级联删除；消息删除时批注和复习卡级联删除。课程及知识点父节点使用 RESTRICT，避免误删被引用实体。每次连接都启用 SQLite 外键检查，恢复事务内还执行完整性检查。
+会话删除时，其消息、关联表和会话标注级联删除；消息删除时批注、批注知识点关联和复习卡级联删除；知识点删除时其批注关联和独立笔记级联删除。课程及知识点父节点使用 RESTRICT，避免误删被引用实体。每次连接都启用 SQLite 外键检查，恢复事务内还执行完整性检查。
 
 索引覆盖课程/更新时间、消息会话/序号、复习到期状态和消息批注。关键词检索当前使用 `LIKE`，不是全文检索引擎；本轮约 3.8 万条消息的运行结果不能外推为大规模数据性能结论。
 
 ### 2.3 设计理由和边界
 
-课程、来源、会话、消息、标签、批注分别建表，避免重复存储课程名称和平台名称。标签、知识点通过中间表表达多对多关系，批注不覆盖原始消息。深读标注中的列表以 JSON 保存，方便保留历史标注格式；可检索的正式标签和知识点仍在独立关系表中。
+课程、来源、会话、消息、标签、批注分别建表，避免重复存储课程名称和平台名称。标签、知识点通过中间表表达多对多关系，批注不覆盖原始消息。消息批注还可以通过 `annotation_point` 直接关联多个知识点，避免“会话涉及两个主题，但某条笔记只讨论其中一个”时必须依赖会话级关系的歧义；知识点页的独立笔记则保存在 `point_note`。深读标注中的列表以 JSON 保存，方便保留历史标注格式；可检索的正式标签和知识点仍在独立关系表中。
 
 本项目将课程与标签关联到会话，而老师参考图关联到消息，这是自行设计的粒度选择：一个完整问答上下文被视为一个学习资料单元。当前一个会话只有一门课程，跨课程会话依靠标签/知识点补充表达；附加功能现已支持人工改课、摘要和标签修订，多课程归属仍未实现。现有关键词规则可能把数学学习中的 Markdown 编辑归入程序设计，原 8 张截图保留的是整改基础阶段的实际分类；新增人工整理界面见附加功能文档。
 
@@ -162,15 +184,15 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8765
 
 ### R01-F01 解析、清理与校验本机记录
 
-- **输入/前置条件**：可读取的 JSON/JSONL Agent 会话；压缩文件额外要求 zstd。输出规范化来源 ID、标题、用户/助手消息和时间；无正文时返回跳过原因，解压失败时报错。
-- **设计/位置**：尚不操作数据库；字段映射、文本提取、上下文清理及确定性凭据脱敏。`app.py:iter_records`、`parse_conversation`、`clean_import_text`、`redact_sensitive`。
-- **效果**：原有 4 个测试验证 Codex/DeepSeek 解析、脱敏、噪声过滤和课程识别；这不代表对每种格式版本做了兼容性保证。
+- **输入/前置条件**：可读取的 JSON/JSONL Agent 会话；压缩文件优先使用 Python `zstandard` 依赖，缺少时回退系统 zstd 命令。输出规范化来源 ID、标题、用户/助手消息和时间；无正文时返回跳过原因，解压失败时报错。
+- **设计/位置**：尚不操作数据库；字段映射、文本提取、上下文清理及确定性凭据脱敏。`app.py:zstd_decompressed_chunks`、`zstd_text_lines`、`iter_records`、`parse_conversation`、`clean_import_text`、`redact_sensitive`。压缩读取逐帧检查 `decompressobj.eof`，截断帧抛出受控错误，不把已读出的部分会话交给入库路径。
+- **效果**：测试验证 Codex/DeepSeek 解析、脱敏、噪声过滤、课程识别、正常压缩导入、无效帧、尾部/半文件截断、多帧末帧截断，以及失败后完整文件重试；这不代表对每种格式版本做了兼容性保证。
 
 ### R01-F02 扫描、查重与事务入库
 
 - **输入/前置条件**：配置的本机来源目录，表已初始化。输出扫描/新增/跳过数量；重复来源 ID 不再入库，没有正文的文件跳过。
 - **设计/位置**：`conversation_source`、`import_job`、`conversation`、`message`、标签/知识点中间表、`audit_log`；先 Q01 查重，每个文件在一次事务中写入。接口 `POST /api/import/scan`；`app.py:source_files`、`scan_and_import`、`import_file`。
-- **效果**：保留已有来源可追溯链路。此路径与完整快照恢复分别说明，不再把“扫描当前机器”当成重现历史数据的方法。
+- **效果**：保留已有来源可追溯链路。规则命中的种子知识点通过 `ensure_point()` 解析别名，改名或合并后新导入仍关联到存活词条（R1 修复，回归见 `tests/test_import_aliases.py`）。此路径与完整快照恢复分别说明，不再把“扫描当前机器”当成重现历史数据的方法。
 
 ### R01-F03 完整快照恢复
 
@@ -225,6 +247,18 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8765
 - **输入/前置条件**：导出当前库，或选择已有 course_id；历史快照文件需存在。输出当前库会话 JSON、课程问答 Markdown，或固定历史快照 JSONL；不存在课程/快照返回 404。
 - **设计/位置**：当前库/课程导出使用 Q09 的实时 SELECT，快照通过 `FileResponse` 下载原文件。接口 `/api/export/conversations.json`、`/api/export/course/{course_id}.md`、`/api/export/structured.jsonl`、`/api/export/manual-annotations.jsonl`；`app.py:export_json`、`export_course`、`export_structured`、`export_manual_annotations`。
 - **效果**：右上角和侧栏导出当前库，课程筛选后显示 Markdown 导出；S08 展示入口与统计。浏览器实测下载 JSON/Markdown 内容与受控数据库一致，两份历史快照下载 SHA-256 与归档文件一致。上述资料导出不包含完整批注/复习状态，不替代 SQLite 备份；当前未提供统计 CSV 下载。
+
+### R05-F01 主题词库：已有词汇优先、近似词提示与合并
+
+- **输入/前置条件**：用户输入标签或课程内知识点名称；可选课程、搜索词和“允许相近新建”标志。输出已有词汇列表、会话使用次数、完全同名/相近关系以及新建或合并后的词条；不存在、跨课程合并或精确重名返回 404/400/409。
+- **设计/位置**：标签与知识点词库共享 `vocabulary.py` 的规范化、匹配和别名逻辑；`tag_alias`、`knowledge_point_alias` 保存重命名/合并后的旧名。接口 `GET/POST /api/tags`、`PATCH /api/tags/{id}`、`POST /api/tags/{target}/merge`、`GET /api/knowledge-points/suggest`、`POST/PATCH /api/knowledge-points` 及合并接口；会话内 `POST /api/conversations/{id}/tags`、`POST/DELETE /api/conversations/{id}/points`。
+- **交互/效果**：输入框聚焦时先列出常用词汇；完全同名（含大小写、全半角和分隔符差异）直接复用；出现“外键”与“外键约束”这类相近名称时返回 409，界面展示已有候选和“仍然新建”二次确认，不会静默产生近义词。词库页可重命名、合并并查看别名；合并把会话关联转到目标词条，旧名作为别名保留。深读标注主题仍只读，但可在会话详情中带入标签编辑器后采纳。恢复与再次导入通过别名解析旧名，不重建已合并词条。验证见新增 11 项后端测试、[词汇功能说明](VOCABULARY_FEATURES.md) 和 [词汇浏览器证据](VOCABULARY_EVIDENCE.json)。
+
+### R05-F02 笔记与知识点的直接关联
+
+- **输入/前置条件**：消息批注可带 `point_ids`，知识点页可写独立笔记。输出批注与知识点的多对多关系、知识点汇总页上的消息笔记/独立笔记，以及从汇总页回到原消息的入口；跨课程关联返回 400。
+- **设计/位置**：`annotation_point(annotation_id, point_id)` 直接表达“这条笔记讨论哪些知识点”；`point_note` 保存知识点页的独立笔记。建批注、改批注时校验知识点属于会话课程并替换关联；知识点页按 `annotation_point` + `point_note` 合并分页。知识点合并时迁移两类关联，会话改课时把批注关联迁到新课程的同等名称知识点。接口：`POST /api/annotations`、`PATCH /api/annotations/{id}`、`GET /api/knowledge-points/{id}/notes`、`POST /api/knowledge-points/{id}/notes`、`PATCH/DELETE /api/point-notes/{id}`；`app.py:create_annotation`、`update_annotation`、`conversation_detail`、`knowledge_point_notes`、`create_point_note`、`curate_conversation`，`vocabulary.py:merge_points`。
+- **效果**：会话详情在批注下展示关联知识点并可直接调整；知识点页显示“消息笔记 + 独立笔记”的汇总，消息笔记保留原消息摘要和“查看原消息”。验证见 9 项后端测试、[笔记关联说明](ANNOTATION_POINTS.md) 和 [浏览器证据](ANNOTATION_POINTS_EVIDENCE.json)。
 
 ## 5. 关键 SQL 与实现方案
 
@@ -342,9 +376,51 @@ SELECT speaker,content FROM message
 WHERE conversation_id=:conversation_id ORDER BY seq_no;
 ```
 
+### Q10 词库使用次数、别名与合并
+
+```sql
+SELECT t.tag_id,t.tag_name,COUNT(DISTINCT c.conversation_id) conversation_count
+FROM tag t
+LEFT JOIN conversation_tag ct ON ct.tag_id=t.tag_id
+LEFT JOIN conversation c ON c.conversation_id=ct.conversation_id AND c.owner_id=:owner_id
+WHERE t.owner_id=:owner_id GROUP BY t.tag_id;
+
+SELECT tag_id,alias_name FROM tag_alias WHERE owner_id=:owner_id;  -- 恢复和输入时先解析旧名
+SELECT point_id,alias_name FROM knowledge_point_alias WHERE course_id=:course_id;
+INSERT OR IGNORE INTO conversation_tag(conversation_id,tag_id)
+SELECT conversation_id,:target_id FROM conversation_tag WHERE tag_id=:source_id;
+UPDATE tag_alias SET tag_id=:target_id WHERE tag_id=:source_id;
+```
+
+知识点合并还需把 `conversation_point` 的会话关联迁移到目标，并处理同一会话同时拥有源/目标时的状态优先级；随后删除源词条。标签和知识点的新建/重命名都先走完全同名与近似词判断，只有 `allow_similar` 明确为真才写入相近名称。
+
+### Q11 一条笔记的多个知识点与知识点汇总
+
+```sql
+-- 消息笔记的多个直接关联
+INSERT OR IGNORE INTO annotation_point(annotation_id,point_id) VALUES(:annotation_id,:point_id);
+
+-- 知识点页：消息笔记（保留原消息）与独立笔记合并分页
+SELECT 'message' source,a.annotation_id id,a.content,a.created_at,a.updated_at,
+       a.is_resolved,a.annotation_type,m.message_id,m.seq_no,m.content message_content,
+       c.conversation_id,c.title
+FROM annotation_point ap
+JOIN annotation a ON a.annotation_id=ap.annotation_id
+JOIN message m ON m.message_id=a.message_id
+JOIN conversation c ON c.conversation_id=m.conversation_id
+WHERE ap.point_id=:point_id AND c.owner_id=:owner_id
+UNION ALL
+SELECT 'point',pn.point_note_id,pn.content,pn.created_at,pn.updated_at,
+       NULL,NULL,NULL,NULL,NULL,NULL,NULL
+FROM point_note pn WHERE pn.point_id=:point_id AND pn.author_id=:owner_id
+ORDER BY datetime(created_at) DESC LIMIT :limit OFFSET :offset;
+```
+
+关联时同时校验 `knowledge_point.course_id = conversation.course_id`；改课时按知识点名称把批注关联迁到新课程，合并知识点时把 `annotation_point` 和 `point_note` 一并转到目标。
+
 ## 6. 实际应用截图与操作结果
 
-截图由 `tests/browser_check.py --capture-report` 在真实 Edge 页面生成，数据来自临时库的完整快照恢复。以下图中新增的学习重点和复习答案是本轮演示操作，历史问答保持原样。
+S01–S08 由 `tests/browser_check.py --capture-report` 在真实 Edge 页面生成，数据来自临时库的完整快照恢复；S09 由 `tests/vocabulary_browser_check.py`、S10 由 `tests/annotation_points_browser_check.py` 在 5 条受控会话上生成。以下图中新增的学习重点、复习答案、词库和笔记关联操作是本轮演示，历史问答保持原样。
 
 ### S01 总览：恢复后核对数据量
 
@@ -394,6 +470,24 @@ WHERE conversation_id=:conversation_id ORDER BY seq_no;
 
 ![学习统计与导出入口](screenshots/08-statistics-export.png)
 
+### S09 主题词库与会话内选词
+
+操作：在标签词库新建“外键”，再尝试“外键约束”，确认相近提示后新建并合并；在会话详情从已有词汇中选择标签和知识点。结果：同名直接复用、相近词先提示；合并后旧名作为别名保留；深读标注主题只读，可带入标签编辑器后采纳。
+
+![标签词库的已有词、相近提示与别名](screenshots-vocabulary/01-vocab-tags.png)
+
+![会话详情输入框聚焦时先列已有标签](screenshots-vocabulary/04-existing-tag-menu.png)
+
+![会话详情中的已有标签/知识点选择](screenshots-vocabulary/03-conversation-picker.png)
+
+### S10 消息笔记直接关联知识点与知识点汇总页
+
+操作：在消息下保存一条批注，同时勾选“SQL 与查询”“数据库完整性”两个知识点；进入知识点词库打开“SQL 与查询”的笔记页，再写一条独立笔记并编辑。结果：会话详情的批注直接显示两个知识点；知识点页汇总消息笔记与独立笔记，消息笔记可跳回原消息。
+
+![消息批注直接关联多个知识点](screenshots-annotation-points/01-note-point-link.png)
+
+![知识点汇总页：消息笔记与独立笔记](screenshots-annotation-points/02-point-notes.png)
+
 ## 7. 与 AI 编码工具协作的实际设计取舍
 
 本节只记录本轮核查、计划确认和代码整改中可核实的决策，不假设此前存在未提供的设计争论。
@@ -410,7 +504,7 @@ WHERE conversation_id=:conversation_id ORDER BY seq_no;
 
 ## 8. 验证与限制
 
-基础整改包含原有 4 个单元测试及 12 个恢复/API 测试；附加功能增加 8 项，可用性增强再增加 10 项，共 34 项，另有三套真实 Edge 页面回归。测试覆盖完整恢复与重复执行、无效输入、事务回滚、分页和所有者范围、人工整理保留、复习日志、完整库备份往返、待办、卡片管理、收藏与上传任务。
+基础整改包含原有 4 个单元测试及 12 个恢复/API 测试；附加功能增加 8 项，可用性增强再增加 10 项。主题词库新增 11 项，笔记与知识点直接关联新增 10 项，导入别名回归新增 2 项，压缩导入与截断检测新增 3 项；当前 `unittest discover` 合计 84 项（含 Text2SQL 等既有测试）。另有三套既有真实 Edge 页面回归、一套词汇专项检查和一套笔记关联专项检查。测试覆盖完整恢复与重复执行、无效输入、事务回滚、分页和所有者范围、人工整理保留、复习日志、完整库备份往返、待办、卡片管理、收藏与上传任务，以及同名复用、近似词确认、重命名/合并、别名恢复、跨课程关联、合并迁移和旧备份兼容。
 
 浏览器额外验证迟到详情/列表响应不覆盖新结果、失败后可重试、批注草稿稳定、建卡立即到期、答对/答错状态更新、刷新后卡片持久、下载内容及历史快照哈希一致。具体结果见 [整改验收](IMPLEMENTATION_VERIFICATION.md) 和 [结构化浏览器证据](IMPLEMENTATION_EVIDENCE.json)。
 
@@ -418,7 +512,7 @@ WHERE conversation_id=:conversation_id ORDER BY seq_no;
 
 ## 9. 相关工作与附加功能
 
-在基础整改后，结合相关研究增加了命中消息定位、可追溯的人工整理，以及逐次复习日志。完整需求、接口、SQL/代码位置、3 张新增截图和验收记录见 [附加功能与相关研究](ADDITIONAL_FEATURES.md)。8 张主截图与 3 张附加截图均来自合成演示数据，不含真实对话。
+在基础整改后，结合相关研究增加了命中消息定位、可追溯的人工整理，以及逐次复习日志。完整需求、接口、SQL/代码位置、3 张新增截图和验收记录见 [附加功能与相关研究](ADDITIONAL_FEATURES.md)。8 张主截图、3 张附加截图、8 张可用性截图、4 张主题词库截图和 2 张笔记关联截图均来自合成或受控样例数据，不含真实对话。
 
 相关工作包括 [Open WebUI 的历史检索](https://docs.openwebui.com/features/chat-conversations/chat-features/history-search/)、[Memory Sandbox](https://arxiv.org/abs/2308.01542) 的可控记忆管理和 [Py-FSRS](https://github.com/open-spaced-repetition/py-fsrs) 的复习数据模型。本轮借鉴对应设计思路，实现了片段/消息定位、课程摘要标签修订及真实日志记录；现有调度仍是固定间隔。
 
@@ -427,5 +521,9 @@ WHERE conversation_id=:conversation_id ORDER BY seq_no;
 ## 10. 日常可用性增强
 
 后续完成先回忆再揭晓、完整备份与恢复、学习待办、Markdown/公式/代码排版、卡片管理、收藏与继续阅读、导入预览和后台进度。详见 [七项功能的需求拆解、接口与截图](USABILITY_FEATURES.md) 和 [实施前计划](USABILITY_PLAN.md)。
+
+在此之上补齐主题词库：标签与知识点都先展示已有词汇、同名复用、相近词二次确认，并提供重命名/合并和别名恢复；深读标注主题保持只读，可在会话详情带入标签编辑器。详见 [主题词库功能与证据](VOCABULARY_FEATURES.md)。
+
+消息批注可直接关联多个知识点，知识点页汇总消息笔记与独立笔记，消息笔记保留原消息回看入口；详见 [笔记与知识点关联](ANNOTATION_POINTS.md)。
 
 新增演示使用独立临时库中的 25 个受控会话，验证一次新增导入后从完整备份恢复，以及恢复前快照可下载；未在工作区历史数据库上执行覆盖恢复。结构化浏览器结果见 [USABILITY_EVIDENCE.json](USABILITY_EVIDENCE.json)。

@@ -34,7 +34,7 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8765
 | DeepSeek | `%USERPROFILE%\.dsh\sessions` | `DEEPSEEK_DATA_ROOT` |
 | Gemini CLI | `%USERPROFILE%\.gemini\tmp` 下的 `chats` | `GEMINI_DATA_ROOT` |
 
-`.jsonl.zst` 需要 PATH 里有 `zstd`。导入时做确定性的凭据脱敏，同一来源会话再次导入会跳过，同一会话后续新增的消息目前不会增量同步。
+`.jsonl.zst` 优先用 Python 的 `zstandard` 依赖解压（`uv sync` 已装），没有它才退回 PATH 里的 `zstd`；读取时逐帧校验，截断或损坏的文件按解压失败处理，不会把半个会话写进库。导入时做确定性的凭据脱敏，同一来源会话再次导入会跳过，同一会话后续新增的消息目前不会增量同步。
 
 ### 大模型（可选）
 
@@ -43,7 +43,8 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8765
 ## 页面
 
 - 错题本：三种错按知识点分组，组内优先级 = 疑问 ×3 + AI 答错 ×2 + 不稳的卡 ×2 + 逾期 ×1。疑问和 AI 答错可以标“弄懂了”、一键出复习卡、跳回原消息；答错过的卡连续答对 3 次才算攻克。
-- 会话库：关键词、课程、来源、知识点、批注和复习状态筛选，后端分页；键盘 `j/k` 移动、`o` 打开、`f` 收藏、`/` 搜索。正文渲染 Markdown、公式和代码。每条消息下可以记疑问、AI 答错、重点或笔记，可以出复习卡；知识点可确认、拒绝，或让 AI 提建议。
+- 会话库：关键词、课程、来源、知识点、批注和复习状态筛选，后端分页；键盘 `j/k` 移动、`o` 打开、`f` 收藏、`/` 搜索。正文渲染 Markdown、公式和代码。每条消息下可以记疑问、AI 答错、重点或笔记，可以出复习卡；批注可以直接关联到一个或多个知识点。会话的标签和知识点从词库里选，可确认、拒绝、移除，或让 AI 提建议。
+- 词库：标签和知识点各一套词库。输入时先列已有词，同名直接复用，“外键”和“外键约束”这类相近名称要明确确认才会新建；可以重命名、合并，旧名留作别名，以后导入或恢复快照时仍落到合并后的那一项。每个知识点有自己的笔记页，汇总关联到它的消息批注，也能写不依赖消息的独立笔记。
 - 复习：先看问题，空格揭晓，`1` 答错、`2` 答对。调度是 SM-2：答错次日再来并把这张卡的难度系数降 0.2，所以常错的卡以后间隔也长得慢。另有逐次复习记录和卡片管理。
 - 总览、统计：数量、课程/来源/知识点分布、每周新记下和弄懂的错及复习答对率。
 - 问答：自然语言转 SQL，只读执行。默认用 C3 方法（只给相关表、纠偏提示、采样 5 条投票），可切换到基线对比。
@@ -56,9 +57,11 @@ uv run --group dev python -m unittest discover -s tests -v
 uv run --group dev python tests/browser_check.py
 uv run --group dev python tests/additional_browser_check.py
 uv run --group dev python tests/usability_browser_check.py
+uv run --group dev python tests/vocabulary_browser_check.py
+uv run --group dev python tests/annotation_points_browser_check.py
 ```
 
-单元测试和浏览器检查都用临时数据库，不读个人目录，不调用大模型（相关测试用替身）。浏览器检查默认使用本机 Microsoft Edge。`tests/browser_check.py --capture-report` 会在临时库里跑 `--demo` 并重拍 `docs/screenshots/`。
+单元测试和浏览器检查都用临时数据库，不读个人目录，不调用大模型（相关测试用替身）。浏览器检查默认使用本机 Microsoft Edge。`tests/browser_check.py --capture-report` 会在临时库里跑 `--demo` 并重拍 `docs/screenshots/`；词库和笔记关联的截图分别由 `tests/vocabulary_browser_check.py`、`tests/annotation_points_browser_check.py` 生成。
 
 Text2SQL 评测会真实调用模型、消耗 token：
 
@@ -72,6 +75,6 @@ uv run python eval/run_text2sql_eval.py
 
 - [项目报告](docs/PROJECT_REPORT.md)：立意、E-R 图与关系模式、逐功能的输入输出/设计/实现位置/效果、关键 SQL、截图、评测和限制。
 - [schema.sql](schema.sql)：唯一的建表定义，`init_db()` 直接执行它。
-- [七项可用性增强](docs/USABILITY_FEATURES.md)、[附加功能与相关研究](docs/ADDITIONAL_FEATURES.md)：报告的附录。
+- [七项可用性增强](docs/USABILITY_FEATURES.md)、[附加功能与相关研究](docs/ADDITIONAL_FEATURES.md)、[主题词库](docs/VOCABULARY_FEATURES.md)、[笔记与知识点关联](docs/ANNOTATION_POINTS.md)：报告的附录。
 - [docs/archive/](docs/archive/)：开发过程中的核查、计划和验收记录。
 - [DATA_POLICY.md](DATA_POLICY.md)：什么数据留在本地、什么会发给大模型、演示数据怎么来的。

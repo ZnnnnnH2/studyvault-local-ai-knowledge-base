@@ -39,7 +39,7 @@ class ProgressInput(BaseModel):
 
 
 class LibraryPreferences(BaseModel):
-    view: Literal['mistakes', 'overview', 'library', 'review', 'stats', 'ask', 'todos', 'data'] = 'mistakes'
+    view: Literal['mistakes', 'overview', 'library', 'review', 'stats', 'ask', 'todos', 'data', 'vocab'] = 'mistakes'
     q: str = Field('', max_length=2000)
     course_id: int | None = None
     source_id: int | None = None
@@ -202,7 +202,9 @@ def create_router(backend: Any) -> APIRouter:
                 source.backup(target)
 
     def counts(db):
-        return {name: db.execute(f'SELECT COUNT(*) FROM {name}').fetchone()[0] for name in ('conversation', 'message', 'annotation', 'review_card', 'review_log', 'conversation_state', 'user_preference')}
+        return {name: db.execute(f'SELECT COUNT(*) FROM {name}').fetchone()[0] for name in (
+            'conversation', 'message', 'annotation', 'annotation_point', 'point_note',
+            'review_card', 'review_log', 'conversation_state', 'user_preference')}
 
     @router.get('/api/backup')
     def download_backup():
@@ -220,7 +222,9 @@ def create_router(backend: Any) -> APIRouter:
             with closing(sqlite3.connect(uploaded.as_uri() + '?mode=ro&immutable=1', uri=True)) as source:
                 actual_tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
                 fts_tables = {name for name in expected_tables if name == 'message_fts' or name.startswith('message_fts_')}
-                required = expected_tables - {'review_log', 'conversation_state', 'user_preference'} - fts_tables
+                required = expected_tables - {'review_log', 'conversation_state', 'user_preference',
+                                              'tag_alias', 'knowledge_point_alias',
+                                              'annotation_point', 'point_note'} - fts_tables
                 if not required <= actual_tables or not actual_tables <= expected_tables:
                     raise ValueError('备份不是受支持的 StudyVault 数据库')
                 expected_objects = set(expected.execute("SELECT type,name,sql FROM sqlite_master WHERE type IN ('trigger','view')"))

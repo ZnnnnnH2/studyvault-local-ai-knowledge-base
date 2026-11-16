@@ -35,7 +35,7 @@ node --check static/app.js
 git diff --check
 ```
 
-- **后端：34/34 通过**，包括原有 4 项测试、6 项恢复测试、6 项基础 API 测试、8 项附加功能测试和 10 项可用性测试。无效快照测试还包含缺文件、坏 JSON、重复会话、重复标注、缺失/未知标注、错误消息计数、非法字段等 10 种情况。
+- **后端：当前 `unittest discover` 84/84 通过**，包括本表的恢复/API/附加/可用性测试、主题词库、笔记知识点关联、导入别名和压缩导入回归测试，以及既有 Text2SQL 测试。无效快照测试还包含缺文件、坏 JSON、重复会话、重复标注、缺失/未知标注、错误消息计数、非法字段等 10 种情况。
 - **真实浏览器：通过**。使用 Microsoft Edge headless，JavaScript 页面错误为 0；覆盖分页、搜索筛选、迟到响应、失败重试、批注、建卡、答对/答错、刷新持久化、JSON/Markdown 下载和快照哈希。
 - **恢复完整性：通过**。空库对合成演示快照恢复会话 14、消息 56、会话标注 14、标签关联 19、知识点关联 14；SQLite 完整性为 `ok`，外键违规为 0。真实 754 语料按 DATA_POLICY.md 只在本机验证、不随仓库公开。
 - **重复恢复：通过**。新增会话/消息/摘要/标注/关系为 0，既有用户内容保留；每次成功恢复会增加一条审计记录。
@@ -51,7 +51,7 @@ git diff --check
 
 ## 附加功能验收
 
-新增消息片段高亮/定位、课程摘要标签人工修订及逐次复习历史，详见 [附加功能文档](ADDITIONAL_FEATURES.md)。该阶段通过独立 DDL 增加 `review_log`，当时为 16 张表；随后可用性增强达到 18 张，原有表和快照数据保持兼容。
+新增消息片段高亮/定位、课程摘要标签人工修订及逐次复习历史，详见 [附加功能文档](ADDITIONAL_FEATURES.md)。该阶段通过独立 DDL 增加 `review_log`，当时为 16 张表；随后可用性增强达到 18 张，主题词库再增加两张别名表后为 20 张；笔记知识点关联再增加 `annotation_point`、`point_note` 后为 22 张（20 张主表 + 2 张别名表），原有表和快照数据保持兼容。
 
 新增 8 项后端测试验证字面关键词检索、整理前后审计、人工删除标签恢复后仍保留、知识点课程一致性、复习与日志共同回滚、日志分页与所有者隔离，以及旧库升级不补造历史。附加浏览器检查及 3 张受控样例截图见 [附加实施证据](ADDITIONAL_FEATURES_EVIDENCE.json)。原 8 张截图保留基础整改阶段的历史语料演示结果。
 
@@ -59,6 +59,22 @@ git diff --check
 
 实施计划与结果分别见 [USABILITY_PLAN.md](USABILITY_PLAN.md)、[USABILITY_FEATURES.md](USABILITY_FEATURES.md)。先回忆后揭晓、待办、卡片管理、排版与代码复制、收藏和阅读恢复、完整库备份恢复、上传预览及进度全部实现。
 
-新增 10 项后端测试通过，三套真实 Edge 检查通过。新浏览器检查还验证无外部页面请求、脚本/图片输入不执行、完整备份恢复后新增导入被移除且恢复前快照可下载。数据结构增加阅读状态和偏好表，当前共 18 张；旧文档中的 15/16 张分别表示对应阶段的基线。
+新增 10 项后端测试通过，三套真实 Edge 检查通过。新浏览器检查还验证无外部页面请求、脚本/图片输入不执行、完整备份恢复后新增导入被移除且恢复前快照可下载。数据结构增加阅读状态和偏好表；主题词库再增加两张别名表，笔记知识点关联再增加两张表，当前共 22 张（20 张主表 + 2 张别名表）。旧文档中的 15/16/18/20 张分别表示对应阶段的基线。
 
 独立证据和 8 张合成样例截图见 [USABILITY_EVIDENCE.json](USABILITY_EVIDENCE.json)。截图与仓库附带数据均为合成，不含真实对话。
+
+## 主题词库验收
+
+标签与知识点现在共用“已有词汇优先”的选词流程：同名复用，相近名称先提示并提供已有候选，只有明确“仍然新建”才写入；词库页支持重命名与合并，旧名保存在别名表，重复恢复快照或再次导入不会重建已合并词条。深读标注主题保持只读，可带入标签编辑器后采纳。接口、数据模型、实现位置和边界见 [VOCABULARY_FEATURES.md](VOCABULARY_FEATURES.md)。
+
+本轮新增 11 项后端测试；加上后续笔记关联 10 项、导入别名回归 2 项和压缩导入后备 3 项，当前 `unittest discover` 合计 84 项通过。真实 Edge 专项检查 `tests/vocabulary_browser_check.py` 通过，JavaScript 错误为 0，记录与截图见 [VOCABULARY_EVIDENCE.json](VOCABULARY_EVIDENCE.json) 和 `docs/screenshots-vocabulary/`。既有三套 Edge 回归保持通过。
+
+## 笔记与知识点关联验收
+
+`annotation_point` 让一条消息批注直接关联多个知识点，`point_note` 支持知识点页的独立笔记；批注仍保留原消息，知识点页按时间合并展示两类笔记。跨课程关联被拒绝，改课和知识点合并会迁移关联；完整备份包含两张新表，旧备份缺少它们时仍可恢复。接口、SQL、页面和边界见 [ANNOTATION_POINTS.md](ANNOTATION_POINTS.md)。
+
+新增 10 项后端测试；当前 `unittest discover` 合计 84 项通过（含导入别名回归 2 项、压缩导入后备 3 项）。真实 Edge 专项检查 `tests/annotation_points_browser_check.py` 通过，JavaScript 错误为 0，证据见 [ANNOTATION_POINTS_EVIDENCE.json](ANNOTATION_POINTS_EVIDENCE.json) 与 `docs/screenshots-annotation-points/`。既有核心、附加、可用性、主题词库浏览器检查保持通过。
+
+## 2026-11-15 验收 R1/R2 修复
+
+验收报告中的 R1 已修复：`import_parsed()` 命中规则知识点后改用支持别名的 `ensure_point()`，因此“SQL 与查询”改名或合并后，新导入仍关联到存活词条并保持 `PROPOSED` 候选状态；R2 也已修复：压缩读取逐帧检查 `decompressobj.eof`，截断帧不会再被当作完整会话导入。新增 `tests/test_import_aliases.py` 两项回归和 `tests/test_zstd_import.py` 三项测试（含截断、多帧截断、失败后完整重试）；当前完整套件 **84/84** 通过。修复说明见 [验收问题修复记录](ACCEPTANCE_FIXES_2026-11-15.md)。

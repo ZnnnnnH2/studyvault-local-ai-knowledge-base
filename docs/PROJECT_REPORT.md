@@ -61,7 +61,13 @@ erDiagram
   TAG ||--o{ CONVERSATION_TAG : used_by
   CONVERSATION ||--o{ CONVERSATION_POINT : covers
   KNOWLEDGE_POINT ||--o{ CONVERSATION_POINT : relates
+  TAG ||--o{ TAG_ALIAS : also_called
+  KNOWLEDGE_POINT ||--o{ KNOWLEDGE_POINT_ALIAS : also_called
   MESSAGE ||--o{ ANNOTATION : receives
+  ANNOTATION ||--o{ ANNOTATION_POINT : discusses
+  KNOWLEDGE_POINT ||--o{ ANNOTATION_POINT : cited_by
+  KNOWLEDGE_POINT ||--o{ POINT_NOTE : collects
+  APP_USER ||--o{ POINT_NOTE : writes
   MESSAGE ||--o| REVIEW_CARD : becomes
   REVIEW_CARD ||--o{ REVIEW_LOG : records
   APP_USER ||--o{ CONVERSATION_STATE : saves
@@ -101,26 +107,34 @@ erDiagram
 | --- | --- | --- |
 | `course` | course_id, course_code, course_name | PK course_id，course_code 唯一 |
 | `knowledge_point` | point_id, course_id, parent_id, point_name | FK course_id、parent_id（自引用），UNIQUE(course_id, point_name) |
+| `knowledge_point_alias` | alias_id, course_id, alias_name, point_id | UNIQUE(course_id, alias_name)，存知识点改名或被合并前的旧名 |
 | `conversation_source` | source_id, platform_name, source_type | UNIQUE(platform_name, source_type)，ChatGPT 的 source_type 为 web_export |
 | `import_job` | import_job_id, owner_id, source_id, file_name, source_conversation_id, status, result_code | 状态和结果码用 CHECK 限定取值 |
 | `conversation` | conversation_id, owner_id, course_id, source_id, import_job_id, source_conversation_id, title, summary, started_at | 四个 FK，UNIQUE(owner_id, source_id, source_conversation_id) 用来查重 |
 | `message` | message_id, conversation_id, seq_no, speaker, content, created_at | UNIQUE(conversation_id, seq_no)，speaker 限 user/assistant/system |
 | `tag`、`conversation_tag` | tag_id, tag_name | 标签按用户唯一，会话与标签多对多 |
+| `tag_alias` | alias_id, owner_id, alias_name, tag_id | UNIQUE(owner_id, alias_name)，存标签的旧名 |
 | `conversation_point` | conversation_id, point_id, status, source, evidence, confirmed_by | 复合主键，status 限 PROPOSED/CONFIRMED/REJECTED |
 | `conversation_annotation` | conversation_id, summary_manual, intent, topics_json 等 | 每个会话至多一条会话级标注 |
 | `annotation` | annotation_id, message_id, author_id, annotation_type, content, is_resolved | 类型限四种，is_resolved 限 0/1 |
+| `annotation_point` | annotation_id, point_id | 复合主键，一条批注可以关联同一门课的多个知识点 |
+| `point_note` | point_note_id, point_id, author_id, content | 写在知识点页上、不依附任何消息的独立笔记 |
 | `review_card` | review_card_id, message_id, owner_id, question, answer, due_at, interval_days, review_count, lapse_count, ease_factor, status | UNIQUE(owner_id, message_id)，ease_factor ≥ 1.3，lapse_count ≥ 0 |
 | `review_log` | review_log_id, review_card_id, reviewed_at, grade, 复习前后的间隔、连续答对、到期时间和难度系数 | grade 限 correct/wrong |
 | `conversation_state` | owner_id, conversation_id, is_favorite, last_message_id | 收藏和阅读位置 |
 | `user_preference`、`audit_log`、`app_user`、`app_role` | | 界面设置、操作审计、固定演示账户 |
 
-删除会话时，消息、关联和会话级标注级联删除。删除消息时，它的批注和复习卡级联删除。课程和知识点父节点用 RESTRICT，被引用时不能删。每次连接都打开 SQLite 外键检查，批量恢复结束前再跑 `PRAGMA integrity_check` 和 `PRAGMA foreign_key_check`，有问题整批回滚。`message_fts` 是 FTS5 全文索引，靠三个触发器和 `message` 表同步。
+删除会话时，消息、关联和会话级标注级联删除。删除消息时，它的批注、批注和知识点的关联以及复习卡级联删除。合并两个知识点时，先把会话关联、批注关联和独立笔记都迁到保留的那一项，再删掉被合并的那一项，所以级联删除不会带走笔记。课程和知识点父节点用 RESTRICT，被引用时不能删。每次连接都打开 SQLite 外键检查，批量恢复结束前再跑 `PRAGMA integrity_check` 和 `PRAGMA foreign_key_check`，有问题整批回滚。`message_fts` 是 FTS5 全文索引，靠三个触发器和 `message` 表同步。
 
 ### 1.3 设计上的几个取舍
 
 课程和知识点挂在会话上，不挂在消息上。老师的参考图把课程关联到消息，我们把一段完整的问答当作一个学习单元，因为一条消息脱离上下文往往看不懂。错题本里的每个错仍然精确到消息，所以从错能跳回原话。
 
 `conversation_point` 带状态和来源。导入时的关键词规则、AI 建议和附带快照都只写 `PROPOSED`，学生确认后才变 `CONFIRMED`，拒绝的关系保留为 `REJECTED`，以后再建议也不会覆盖。错题本给每个会话选一个主知识点时，先取已确认的，再取待确认的，不用被拒绝的。
+
+`conversation_point` 说的是“这段会话涉及这个知识点”，`annotation_point` 说的是“这条笔记讲的是这个知识点”，两者分开存。一段讲外键的会话里，学生可能在某条消息下顺手记了一句关于事务的疑问，这条疑问应该出现在“事务与并发”的笔记页上，而不必把整段会话也挂到事务下面。
+
+标签和知识点改名或合并后，旧名记进 `tag_alias`、`knowledge_point_alias`，不直接丢掉。原因是附带快照、导入规则和 AI 建议里写的仍是旧名，按名字精确查找会再建出一条和合并结果重复的记录。所有按名字找词的地方（导入、恢复、AI 建议）都先查正式名，再查别名，最后按忽略大小写、全半角和空格的规范化写法比对。
 
 `review_card` 同时存当前连续答对次数 `review_count` 和累计答错次数 `lapse_count`。前者决定下一次间隔，后者决定这张卡算不算常错卡。两者都能从 `review_log` 重算，测试逐张卡核对了这一点。旧数据库升级时，`lapse_count` 由已有日志里答错的次数回填。
 
@@ -140,9 +154,9 @@ ChatGPT 导出不是按顺序存消息，而是存成一棵树。用户每编辑
 
 | 功能 | 输入、输出与异常 | 设计与实现位置 | 实现效果 |
 | --- | --- | --- | --- |
-| R01-F01 解析 Agent 会话文件 | 输入：本机 JSON/JSONL 文件<br>输出：来源 ID、标题、按序的用户/助手消息<br>没有正文时跳过并记原因 | 按平台映射字段，删除运行时上下文，凭据脱敏<br>`app.py:parse_conversation`、`clean_import_text`、`redact_sensitive` | 单元测试覆盖 Codex、DeepSeek 的解析、脱敏和噪声过滤 |
+| R01-F01 解析 Agent 会话文件 | 输入：本机 JSON/JSONL 文件，或 zstd 压缩的 `.jsonl.zst`<br>输出：来源 ID、标题、按序的用户/助手消息<br>没有正文时跳过并记原因，压缩帧不完整时按解析失败处理 | 按平台映射字段，删除运行时上下文，凭据脱敏；压缩文件用 Python `zstandard` 逐帧解压，每一帧都读到帧尾才算完整<br>`app.py:parse_conversation`、`zstd_decompressed_chunks`、`clean_import_text`、`redact_sensitive` | 单元测试覆盖 Codex、DeepSeek 的解析、脱敏和噪声过滤；截掉尾部、只剩半个文件、多帧文件末帧被截断时都不入库，换成完整文件重试可以成功 |
 | R01-F02 解析 ChatGPT 网页导出 | 输入：`conversations.json`<br>输出：多段对话<br>不是导出格式时报错 | 沿 `current_node` 取可见分支，只留 text/multimodal_text<br>`app.py:parse_chatgpt_export`、`chatgpt_thread` | 编辑过的分支和工具调用被丢弃（S09） |
-| R01-F03 查重与事务入库 | 输入：解析结果<br>输出：新增或跳过<br>重复来源 ID 跳过 | Q01 查重，一段对话一个事务<br>`app.py:import_parsed`、`scan_and_import`、`import_export_file` | 扫描本机或 `--import-file` 导入 |
+| R01-F03 查重与事务入库 | 输入：解析结果<br>输出：新增或跳过<br>重复来源 ID 跳过 | Q01 查重，一段对话一个事务；规则命中的知识点经 `ensure_point` 按别名解析<br>`app.py:import_parsed`、`scan_and_import`、`import_export_file` | 扫描本机或 `--import-file` 导入；“SQL 与查询”改名后，新导入的对话仍挂到改名后的知识点上 |
 | R01-F04 上传预览与后台导入 | 输入：1–20 个文件<br>输出：逐段对话的新增/重复/无效预览，勾选后后台导入<br>超过 100 MB 返回 413 | 预览不写库，导入在后台线程逐段进行，可停止<br>`usability.py:preview_import`、`start_import`、`worker` | 一个 ChatGPT 导出展开成多行供勾选（S09） |
 | R01-F05 恢复演示学期 | 输入：附带的对话快照和学习记录<br>输出：各表新增数量和完整性检查结果<br>冲突时整批回滚 | `app.py:read_bundle`、`restore_bundled`、`seed_demo_activity`，复习结果经 `apply_review` 重放 | `--demo` 在空库上恢复 90 段对话、559 条消息和全部学习记录，重复运行不重复写入 |
 
@@ -159,9 +173,10 @@ ChatGPT 导出不是按顺序存消息，而是存成一棵树。用户每编辑
 | --- | --- | --- | --- |
 | R03-F01 规则提出知识点 | 输入：导入的对话<br>输出：`PROPOSED` 的知识点关联及命中的关键词 | 课程内的关键词规则，`app.py:POINT_RULES`、`import_parsed` | 关键词作为证据存在 `evidence` |
 | R03-F02 AI 建议知识点 | 输入：会话 ID，或“所有未归类的会话”<br>输出：建议的知识点及理由，或改课建议<br>模型输出无法解析返回 502，不写库 | Q06，只写 `PROPOSED`，已有关系不覆盖，新知识点每次最多 1 个<br>`classify.py:suggest`、`apply` | 演示数据里 6 段未归类对话，模型的第一建议全部与出题时的知识点一致（R03 说明） |
-| R03-F03 确认、拒绝与人工整理 | 输入：知识点决定，或课程、摘要、标签的修改<br>输出：更新后的关系，审计记录 | `app.py:decide_point`、`curate_conversation`，改课时知识点按名称迁移 | 人工修订在重复恢复快照时保留 |
+| R03-F03 确认、拒绝与人工整理 | 输入：知识点决定，或课程、摘要、标签的修改<br>输出：更新后的关系，审计记录<br>标签名为空或超过 50 字返回 400 | `app.py:decide_point`、`remove_point`、`curate_conversation`，改课时会话和批注上的知识点都按名称迁移 | 人工修订在重复恢复快照时保留 |
+| R03-F04 标签与知识点词库 | 输入：标签名，或某门课下的知识点名，可选“确认新建相近词”<br>输出：已有词及使用次数；新建、复用或合并的结果<br>和已有词相近又没确认时返回 409 和候选列表 | Q08；`vocabulary.py:normalize_term`、`term_relation`、`create_or_get_tag`、`create_or_get_point`、`merge_points`，前端 `static/vocabulary.js` | 输入框一聚焦就列出已有词；“外键”和“外键约束”这类包含关系或相似度达 0.82 的名字要先确认；合并后旧名留作别名（S10） |
 
-AI 建议只在学生点按钮时运行，因为它要把会话的标题、摘要和前约 3000 字发给大模型。演示学期里有 6 段对话故意没挂知识点，一次批量建议提出 10 个关联。每段的第一个建议都和生成数据时写的知识点一致，第二个建议多半牵强，比如因为示例代码是 Python，就给一段讲测试覆盖率的对话加了“Python 与调试”。这是建议只写 `PROPOSED`、等学生确认的原因。没配 key 时退回关键词规则。
+AI 建议只在学生点按钮时运行，因为它要把会话的标题、摘要和前约 3000 字发给大模型。演示学期里有 6 段对话故意没挂知识点，一次批量建议提出 10 个关联。每段的第一个建议都和生成数据时写的知识点一致，第二个建议多半牵强，比如因为示例代码是 Python，就给一段讲测试覆盖率的对话加了“Python 与调试”。这是建议只写 `PROPOSED`、等学生确认的原因。没配 key 时退回关键词规则。模型给出的知识点名也先经词库解析，旧名和写法变体都落到已有的那一项上。
 
 ### R04 批注与错题本
 
@@ -169,6 +184,7 @@ AI 建议只在学生点按钮时运行，因为它要把会话的标题、摘�
 | --- | --- | --- | --- |
 | R04-F01 消息级批注 | 输入：消息 ID、类型（笔记/疑问/AI 答错/重点）、内容<br>输出：批注记录和审计<br>类型非法或内容为空返回 400，不属于当前用户返回 403 | 批注单独成表，不改原消息<br>`app.py:create_annotation`、`update_annotation` | 疑问和 AI 答错可以标“弄懂了”，也能重新打开（S04） |
 | R04-F02 错题本汇总 | 输入：掌握情况（没掌握/已攻克/全部）、类型、课程<br>输出：按知识点分组、按优先级排序的错，以及总数和本周进出 | Q03，三种错各一条查询，按主知识点归组<br>`errorbook.py:mistakes` | 首页（S01、S02） |
+| R04-F04 批注关联知识点与知识点笔记页 | 输入：批注的 `point_ids`；或知识点 ID 和独立笔记内容<br>输出：批注关联的知识点；知识点页上按时间合并分页的消息笔记和独立笔记<br>知识点不属于该会话的课程返回 400，笔记超过 4000 字返回 400 | Q09；`app.py:validate_annotation_points`、`knowledge_point_notes`、`create_point_note` | 批注下列出它关联的知识点，点名字进入该知识点的笔记页，消息笔记附原消息摘要和“查看原消息”（S11） |
 | R04-F03 从错题出卡 | 输入：疑问或纠错的 ID，可选的题目和答案<br>输出：立即到期的复习卡<br>不是疑问或纠错返回 404 | 疑问用原文作题目、消息作答案，纠错用纠错内容作答案<br>`errorbook.py:card_from_mistake` | 出卡后错题旁显示“已有卡” |
 
 ### R05 复习
@@ -318,9 +334,47 @@ LEFT JOIN message m ON m.conversation_id = c.conversation_id
 GROUP BY co.course_id;
 ```
 
+### Q08 词库：使用次数与合并
+
+```sql
+SELECT t.tag_id, t.tag_name, COUNT(DISTINCT c.conversation_id) AS conversation_count
+FROM tag t
+LEFT JOIN conversation_tag ct ON ct.tag_id = t.tag_id
+LEFT JOIN conversation c ON c.conversation_id = ct.conversation_id AND c.owner_id = :owner
+WHERE t.owner_id = :owner
+GROUP BY t.tag_id;
+
+-- 合并：会话关联挪到目标，旧名记为目标的别名，再删掉源标签
+INSERT OR IGNORE INTO conversation_tag(conversation_id, tag_id)
+SELECT conversation_id, :target FROM conversation_tag WHERE tag_id = :source;
+UPDATE tag_alias SET tag_id = :target WHERE tag_id = :source;
+INSERT INTO tag_alias(owner_id, alias_name, tag_id) VALUES(:owner, :source_name, :target)
+ON CONFLICT(owner_id, alias_name) DO UPDATE SET tag_id = excluded.tag_id;
+DELETE FROM tag WHERE tag_id = :source;
+```
+
+知识点合并多一步：同一段会话同时挂着源和目标时，保留状态更靠前的那条（已确认优先于待确认，待确认优先于已拒绝）。
+
+### Q09 知识点笔记页
+
+```sql
+SELECT 'message' AS source, a.annotation_id AS id, a.content, a.created_at, m.message_id, c.title
+FROM annotation_point ap
+JOIN annotation a ON a.annotation_id = ap.annotation_id
+JOIN message m ON m.message_id = a.message_id
+JOIN conversation c ON c.conversation_id = m.conversation_id
+WHERE ap.point_id = :point AND c.owner_id = :owner
+UNION ALL
+SELECT 'point', pn.point_note_id, pn.content, pn.created_at, NULL, NULL
+FROM point_note pn WHERE pn.point_id = :point AND pn.author_id = :owner
+ORDER BY created_at DESC LIMIT :limit OFFSET :offset;
+```
+
+两类笔记的列数和含义对齐后用 `UNION ALL` 合并，翻页在 SQL 里做。
+
 ## 五、页面截图
 
-截图由 `tests/browser_check.py --capture-report` 在临时数据库上跑 `--demo` 后拍摄，拍摄时新增了一条疑问，ChatGPT 导入只预览没有入库。
+S01–S09 由 `tests/browser_check.py --capture-report` 在临时数据库上跑 `--demo` 后拍摄，拍摄时新增了一条疑问，ChatGPT 导入只预览没有入库。S10、S11 分别由 `tests/vocabulary_browser_check.py`、`tests/annotation_points_browser_check.py` 在 5 段测试用会话上拍摄。
 
 ### S01 错题本
 
@@ -376,6 +430,24 @@ GROUP BY co.course_id;
 
 ![ChatGPT 导出预览](screenshots/09-chatgpt-import.png)
 
+### S10 词库
+
+先建标签“外键”，再输入“外键约束”时界面提示已有相近标签，确认后新建，再把它合并进“外键”。合并后列表里只剩“外键”，旧名“外键约束”显示为别名。
+
+![标签词库](screenshots-vocabulary/01-vocab-tags.png)
+
+会话详情里的标签和知识点都从词库里选，输入框旁注明同名会复用、相近名称会先提示。上方知识点条目的名字本身是链接，点它进入该知识点的笔记页。
+
+![会话详情的词库选择](screenshots-vocabulary/03-conversation-picker.png)
+
+### S11 批注关联知识点
+
+在第 1 条消息下记一条笔记，同时勾选“SQL 与查询”和“数据库完整性”，笔记下方列出这两个知识点。进入“SQL 与查询”的笔记页，这条消息笔记和一条直接写在页面上的独立笔记按时间排在一起，消息笔记带着原消息摘要。
+
+![批注关联两个知识点](screenshots-annotation-points/01-note-point-link.png)
+
+![知识点笔记页](screenshots-annotation-points/02-point-notes.png)
+
 ## 六、Text2SQL 评测
 
 ### C3 是什么
@@ -421,13 +493,16 @@ C3 只给相关表的设计在表很多、问题只涉及其中少数几张时�
 
 ## 七、测试
 
-单元测试 82 项，用临时数据库，不读个人目录，涉及大模型的部分用替身。三套浏览器检查在真实浏览器里走完主要流程，包括错题本里标弄懂、从已攻克里重新打开、跳回原消息。几项和本报告结论直接相关的测试：
+单元测试 110 项，用临时数据库，不读个人目录，涉及大模型的部分用替身。五套浏览器检查在真实浏览器里走完主要流程，包括错题本里标弄懂、从已攻克里重新打开、跳回原消息、在词库里合并相近词、给批注勾选知识点。几项和本报告结论直接相关的测试：
 
 - 每张演示复习卡的当前状态都等于重放它自己的复习日志的结果，相邻两次复习首尾相接（`tests/test_errorbook.py`）。
 - 错题本的分组、优先级、连续答对 3 次攻克、被拒绝的知识点不参与分组（同上）。
 - ChatGPT 导出的分支选择、工具调用过滤、重复上传跳过（`tests/test_chatgpt_export.py`）。
 - AI 建议不覆盖已确认或已拒绝的关系，改课建议不写入知识点，模型输出坏了不写库（`tests/test_classify.py`）。
 - 告诉 Text2SQL 模型的每一列都真实存在于 `schema.sql`（`tests/test_text2sql.py`）。
+- 相近词不确认就不新建；改名、合并后旧名留作别名，再恢复快照、再导入、AI 再用旧名建议时都落到保留的那一项（`tests/test_vocabulary.py`、`tests/test_import_aliases.py`、`tests/test_classify.py`）。
+- 合并知识点时批注关联和独立笔记随之迁移，跨课程的关联被拒绝（`tests/test_annotation_points.py`）。
+- 截断或损坏的 zstd 压缩会话不会部分入库，用完整文件重试可以成功（`tests/test_zstd_import.py`）。
 
 ## 限制
 

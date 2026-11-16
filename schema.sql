@@ -36,6 +36,18 @@ CREATE TABLE IF NOT EXISTS knowledge_point (
     UNIQUE(course_id, point_name)
 );
 
+-- Course-scoped alternate names, for the same rename/merge restore reason as
+-- tag_alias. The same spelling may exist as an alias under different courses.
+CREATE TABLE IF NOT EXISTS knowledge_point_alias (
+    alias_id INTEGER PRIMARY KEY,
+    course_id INTEGER NOT NULL REFERENCES course(course_id) ON DELETE CASCADE,
+    alias_name TEXT NOT NULL,
+    point_id INTEGER NOT NULL REFERENCES knowledge_point(point_id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(course_id, alias_name)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_point_alias_point ON knowledge_point_alias(point_id);
+
 CREATE TABLE IF NOT EXISTS conversation_source (
     source_id INTEGER PRIMARY KEY,
     platform_name TEXT NOT NULL,
@@ -107,6 +119,19 @@ CREATE TABLE IF NOT EXISTS tag (
     UNIQUE(owner_id, tag_name)
 );
 
+-- Alternate names kept after a tag is renamed or merged. Imports and snapshot
+-- restores resolve the old spelling to the surviving tag instead of creating a
+-- second near-duplicate row.
+CREATE TABLE IF NOT EXISTS tag_alias (
+    alias_id INTEGER PRIMARY KEY,
+    owner_id INTEGER NOT NULL REFERENCES app_user(user_id),
+    alias_name TEXT NOT NULL,
+    tag_id INTEGER NOT NULL REFERENCES tag(tag_id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner_id, alias_name)
+);
+CREATE INDEX IF NOT EXISTS idx_tag_alias_tag ON tag_alias(tag_id);
+
 CREATE TABLE IF NOT EXISTS conversation_tag (
     conversation_id INTEGER NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
     tag_id INTEGER NOT NULL REFERENCES tag(tag_id) ON DELETE CASCADE,
@@ -135,6 +160,29 @@ CREATE TABLE IF NOT EXISTS annotation (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- A message note can discuss several knowledge points directly; the original
+-- message remains the evidence.  This is deliberately separate from
+-- conversation_point, which says the whole conversation touches a point.
+CREATE TABLE IF NOT EXISTS annotation_point (
+    annotation_id INTEGER NOT NULL REFERENCES annotation(annotation_id) ON DELETE CASCADE,
+    point_id INTEGER NOT NULL REFERENCES knowledge_point(point_id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(annotation_id, point_id)
+);
+CREATE INDEX IF NOT EXISTS idx_annotation_point_point ON annotation_point(point_id, annotation_id);
+
+-- Independent notes written on a knowledge-point page.  They have no message
+-- by design; message-backed notes stay in annotation + annotation_point.
+CREATE TABLE IF NOT EXISTS point_note (
+    point_note_id INTEGER PRIMARY KEY,
+    point_id INTEGER NOT NULL REFERENCES knowledge_point(point_id) ON DELETE CASCADE,
+    author_id INTEGER NOT NULL REFERENCES app_user(user_id),
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_point_note_point ON point_note(point_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS review_card (
     review_card_id INTEGER PRIMARY KEY,

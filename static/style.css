@@ -261,6 +261,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .point-chip.proposed { color: var(--gold); background: var(--gold-soft); }
 .point-chip.rejected { color: var(--danger); background: var(--danger-soft); text-decoration: line-through; }
 .point-chip .text-button { font-size: 11px; padding: 0 2px; }
+.point-chip .point-notes-link { font-weight: 600; color: inherit; }
 
 /* 整理编辑 */
 .curation-editor { margin: 12px 0; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; }
@@ -453,12 +454,119 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .annotation.type-note { background: var(--surface-soft); border-left-color: var(--line-strong); }
 .annotation.type-note strong { color: var(--ink-soft); }
 
+/* ---------- 主题词库 ---------- */
+.segmented { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); overflow: hidden; background: var(--surface); }
+.segmented-button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: .88rem; padding: 9px 15px; cursor: pointer; }
+.segmented-button + .segmented-button { border-left: 1px solid var(--line); }
+.segmented-button.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+.vocab-panel { padding: 22px 24px; }
+.vocab-panel .panel-head { align-items: flex-start; }
+.vocab-panel .panel-head p { margin-top: 5px; font-size: 12.5px; max-width: 720px; }
+.vocab-note { margin: -2px 0 12px; padding-left: 10px; border-left: 2px solid var(--line-strong); font-size: 12px; }
+.vocab-create-form { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 6px; }
+.vocab-create-form input { flex: 1; min-width: 240px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); font: inherit; background: var(--surface); color: var(--ink); }
+.vocab-create-form .button { padding: 8px 15px; }
+.vocab-conflict { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--warm); border-left-width: 3px; border-radius: var(--radius-sm); background: var(--gold-soft); color: var(--ink-soft); font-size: 13px; }
+.vocab-conflict p { margin: 0 0 8px; }
+.vocab-conflict-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 6px; }
+.vocab-list { display: grid; gap: 0; margin-top: 10px; }
+.vocab-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; padding: 14px 2px; border-bottom: 1px solid var(--line); }
+.vocab-row:last-child { border-bottom: 0; }
+.vocab-row-main { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px 10px; }
+.vocab-name { font-size: .98rem; overflow-wrap: anywhere; }
+.vocab-course, .vocab-alias { font-size: 12px; }
+.vocab-row-actions { display: flex; align-items: flex-start; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+.vocab-merge { position: relative; }
+.vocab-merge summary { list-style: none; display: inline-block; }
+.vocab-merge summary::-webkit-details-marker { display: none; }
+.vocab-merge-form { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: min(320px, 78vw); padding: 13px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); box-shadow: var(--shadow); display: grid; gap: 9px; }
+.vocab-merge-form label { display: grid; gap: 5px; font-size: 12.5px; }
+.vocab-merge-form select { width: 100%; padding: 8px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font: inherit; }
+.vocab-row-edit { grid-column: 1 / -1; }
+.vocab-rename-form { display: grid; gap: 9px; margin-top: 8px; padding: 13px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.vocab-rename-form label { display: grid; gap: 5px; font-size: 12.5px; }
+.vocab-rename-form input:not([type=checkbox]) { padding: 8px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); font: inherit; background: var(--surface); color: var(--ink); }
+.vocab-edit-actions { display: flex; gap: 7px; }
+.vocab-edit-error { margin: 0; color: var(--danger); font-size: 12.5px; min-height: 1em; }
+.field-hint { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.55; }
+.field-warn { color: var(--warm); }
+.inline-check { display: inline-flex !important; align-items: center; gap: 6px; font-size: 12.5px !important; color: var(--ink-soft); justify-self: start; }
+.inline-check input { width: auto; }
+#curation-form .inline-check input { width: auto; margin: 0; }
+.vocab-panel .empty-state { padding: 26px 8px; }
+
+/* 会话详情中的词库编辑器 */
+.vocab-editors { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 14px 0; }
+.vocab-editor-block { min-width: 0; padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.vocab-editor-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.vocab-editor-head h3 { font-size: .88rem; color: var(--ink-soft); }
+.vocab-editor-head .text-button { font-size: 11.5px; }
+.vocab-picker { position: relative; min-width: 0; }
+.vocab-picker-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.vocab-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 10px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent-ink); font-size: 11.5px; }
+.vocab-chip-remove { border: 0; background: transparent; color: var(--accent-ink); cursor: pointer; font: inherit; line-height: 1; padding: 0 2px; opacity: .7; }
+.vocab-chip-remove:hover { opacity: 1; color: var(--danger); }
+.vocab-picker-search { position: relative; }
+.vocab-picker-input { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); font: inherit; font-size: .87rem; background: var(--surface); color: var(--ink); }
+.vocab-picker-menu { position: absolute; left: 0; right: 0; top: calc(100% + 5px); z-index: 30; max-height: 340px; overflow-y: auto; padding: 5px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); box-shadow: var(--shadow); }
+.vocab-option { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; border: 0; border-radius: 5px; background: transparent; color: var(--ink); font: inherit; font-size: .87rem; text-align: left; padding: 8px 9px; cursor: pointer; }
+.vocab-option:hover, .vocab-option.active { background: var(--accent-soft); }
+.vocab-option.is-similar .vocab-option-name { color: var(--warm); }
+.vocab-option-name { overflow-wrap: anywhere; }
+.vocab-option-meta { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.vocab-option-meta small { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.vocab-badge { border-radius: var(--radius-pill); padding: 1px 7px; font-size: 10.5px; font-weight: 600; background: var(--surface-soft); color: var(--muted); }
+.vocab-badge.exact { background: var(--accent-soft); color: var(--accent-ink); }
+.vocab-badge.similar { background: var(--gold-soft); color: var(--gold); }
+.vocab-badge.contains { background: var(--surface-soft); color: var(--ink-soft); }
+.vocab-option.vocab-default { border-top: 1px solid var(--line); border-radius: 0 0 5px 5px; margin-top: 3px; padding-top: 10px; font-weight: 600; color: var(--accent); justify-content: flex-start; }
+.vocab-empty { margin: 0; padding: 9px; color: var(--muted); font-size: 12.5px; }
+.vocab-picker-conflict { margin-top: 8px; padding: 10px 11px; border: 1px solid var(--warm); border-left-width: 3px; border-radius: var(--radius-sm); background: var(--gold-soft); font-size: 12px; }
+.vocab-picker-conflict p { margin: 0 0 7px; }
+.vocab-picker-conflict .field-hint { color: var(--ink-soft); }
+.topic-chip { display: inline-flex; align-items: center; gap: 2px; margin: 0 6px 3px 0; padding: 1px 8px 1px 9px; border-radius: var(--radius-pill); background: var(--surface); border: 1px solid var(--line-strong); font-size: 11.5px; }
+.topic-chip .adopt-topic { font-size: 10.5px; font-weight: 600; padding: 0 1px; }
+
+/* 消息批注与知识点的直接关联 */
+.annotation-points { margin-top: 6px; font-size: 11.5px; color: var(--ink-soft); }
+.annotation-points .note-point-link { font-size: 11.5px; font-weight: 600; }
+.annotation-point-edit { margin-top: 7px; font-size: 11.5px; }
+.annotation-point-edit summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.annotation-form .annotation-point-edit { flex: 1 0 100%; border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 2px; }
+.point-choice-list { display: flex; flex-wrap: wrap; gap: 5px 14px; margin: 8px 0; }
+.point-choice { display: inline-flex !important; align-items: center; gap: 5px; font-size: 12px !important; color: var(--ink-soft); cursor: pointer; }
+.point-choice input, .annotation-form .point-choice input { width: auto; flex: 0 0 auto; margin: 0; }
+.annotation-points-form .small-button { margin-top: 2px; }
+.annotation-points-form { margin-top: 3px; }
+
+/* 知识点汇总页 */
+.point-notes-panel { max-width: 900px; }
+.point-notes-panel .panel-head { align-items: flex-start; }
+.point-notes-panel .panel-head p { margin-top: 4px; font-size: 12.5px; }
+.point-note-form { display: grid; gap: 9px; margin: 4px 0 18px; padding: 14px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.point-note-form label { display: grid; gap: 6px; font-size: 12.5px; color: var(--ink-soft); }
+.point-note-form textarea, .point-note-edit-form textarea { width: 100%; min-height: 78px; resize: vertical; padding: 9px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); font: inherit; background: var(--surface); color: var(--ink); }
+.point-note-form .button { justify-self: start; }
+.point-note-list { display: grid; gap: 0; }
+.point-note-item { padding: 14px 2px; border-bottom: 1px solid var(--line); }
+.point-note-item:last-child { border-bottom: 0; }
+.point-note-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.point-note-meta small { color: var(--muted); font-size: 11.5px; }
+.point-note-content { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink-soft); }
+.point-note-excerpt { margin-top: 6px; font-size: 12px; }
+.point-note-item > .small-button { margin-top: 8px; }
+.point-note-edit { margin-top: 8px; font-size: 12.5px; }
+.point-note-edit summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.point-note-edit-form { display: grid; gap: 7px; margin-top: 7px; }
+.point-note-edit-form .small-button { justify-self: start; }
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 920px) {
   .grid.three { grid-template-columns: 1fr; }
   .library-layout { grid-template-columns: 1fr; }
   .list-col { position: static; }
   .conversation-list { max-height: 420px; }
+  .vocab-editors { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
   .topbar-inner { gap: 10px; }
@@ -470,6 +578,10 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
   .eb-actions { justify-content: flex-start; }
   .eb-priority { min-width: 0; }
   .eb-priority i { width: 72px; }
+
+  .vocab-row { grid-template-columns: 1fr; }
+  .vocab-row-actions { justify-content: flex-start; }
+  .vocab-merge-form { right: auto; left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

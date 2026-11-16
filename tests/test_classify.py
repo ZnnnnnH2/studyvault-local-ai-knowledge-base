@@ -57,6 +57,18 @@ class SuggestPointsTest(unittest.TestCase):
         self.assertEqual(result['added'], 0)
         self.assertEqual(self.points()['数据库完整性']['status'], 'REJECTED')
 
+    def test_old_name_from_the_model_resolves_to_the_renamed_point(self):
+        with app.connect() as db:
+            point = db.execute("SELECT point_id FROM knowledge_point WHERE point_name='数据库完整性'").fetchone()[0]
+            before = db.execute('SELECT COUNT(*) FROM knowledge_point').fetchone()[0]
+        renamed = self.client.patch(f'/api/knowledge-points/{point}', json={'point_name': '完整性约束', 'allow_similar': True})
+        self.assertEqual(renamed.status_code, 200)
+        with patch.object(text2sql, 'llm_config', return_value=ONLINE), self.reply({'course': '数据库系统概论', 'points': [{'name': '数据库完整性', 'reason': '旧名'}]}):
+            result = self.client.post(f'/api/conversations/{self.cid}/suggest-points').json()
+        self.assertEqual([(p['point_id'], p['point_name'], p['new_point']) for p in result['points']], [(point, '完整性约束', False)])
+        with app.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM knowledge_point').fetchone()[0], before)
+
     def test_other_course_only_returns_a_suggestion(self):
         with patch.object(text2sql, 'llm_config', return_value=ONLINE), self.reply({'course': '操作系统', 'points': [{'name': '进程与线程', 'reason': '在讲 fork'}]}):
             result = self.client.post(f'/api/conversations/{self.cid}/suggest-points').json()

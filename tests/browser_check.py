@@ -63,10 +63,10 @@ async def regression(browser, base_url: str) -> dict:
     await page.locator('.conversation-item').first.click()
     await expect(page.locator('.message')).to_have_count(2)
     count = len(requests)
-    await page.locator('.annotation-form input').first.fill('保留未提交的输入')
+    await page.locator('.annotation-form input[aria-label="批注内容"]').first.fill('保留未提交的输入')
     await page.wait_for_timeout(400)
     assert len(requests) == count, 'opening a conversation still causes repeated requests'
-    await expect(page.locator('.annotation-form input').first).to_have_value('保留未提交的输入')
+    await expect(page.locator('.annotation-form input[aria-label="批注内容"]').first).to_have_value('保留未提交的输入')
     await page.locator('.annotation-form button').first.click()
     await expect(page.locator('.annotation')).to_contain_text('保留未提交的输入')
     await expect(page.locator('#app-status')).to_have_text('')
@@ -211,7 +211,7 @@ async def capture_report(browser, base_url: str) -> dict:
     await screenshot('03-source-message.png')
     message = page.locator('.message.user').first
     await message.locator('.annotation-form select').select_option('QUESTION')
-    await message.locator('.annotation-form input').fill('换成多对多的例子，这个结论还成立吗？')
+    await message.locator('.annotation-form input[aria-label="批注内容"]').fill('换成多对多的例子，这个结论还成立吗？')
     await message.locator('.annotation-form button').click()
     await expect(message.locator('.annotation.type-question')).to_have_count(1)
     await message.locator('.annotation.type-question').scroll_into_view_if_needed()

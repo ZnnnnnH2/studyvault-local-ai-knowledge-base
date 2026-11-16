@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 import text2sql
+from vocabulary import ensure_point, find_point
 
 MAX_CONTEXT_CHARS = 3000
 MAX_NEW_POINTS = 1
@@ -83,19 +84,23 @@ def create_router(backend: Any) -> APIRouter:
         known, created, added, points = set(courses[course]), 0, 0, []
         for point in raw_points[:3]:
             name = point["name"].strip()[:20]
-            if name not in known:
+            # Resolve through the vocabulary so a renamed/merged point's old spelling
+            # (alias) or a spacing/width variant reuses the existing row.
+            found = find_point(db, ctx["course_id"], name)
+            if found is None:
                 if created >= MAX_NEW_POINTS:
                     continue
                 created += 1
-                db.execute("INSERT OR IGNORE INTO knowledge_point(course_id,point_name) VALUES(?,?)", (ctx["course_id"], name))
-            point_id = db.execute("SELECT point_id FROM knowledge_point WHERE course_id=? AND point_name=?", (ctx["course_id"], name)).fetchone()[0]
+            else:
+                name = found["point_name"]
+            point_id = ensure_point(db, ctx["course_id"], name)
             evidence = str(point.get("reason") or "")[:300]
             # Existing CONFIRMED / REJECTED / PROPOSED rows win: the human decision is never overwritten.
             inserted = db.execute("INSERT OR IGNORE INTO conversation_point(conversation_id,point_id,confidence,source,status,evidence) VALUES(?,?,?,?, 'PROPOSED', ?)",
                                   (ctx["conversation_id"], point_id, 0.8 if source == "llm" else 0.5, source, evidence)).rowcount
             added += inserted
             status = db.execute("SELECT status FROM conversation_point WHERE conversation_id=? AND point_id=?", (ctx["conversation_id"], point_id)).fetchone()[0]
-            points.append({"point_id": point_id, "point_name": name, "evidence": evidence, "status": status, "new_point": name not in known, "added": bool(inserted)})
+            points.append({"point_id": point_id, "point_name": name, "evidence": evidence, "status": status, "new_point": found is None, "added": bool(inserted)})
         return {"conversation_id": ctx["conversation_id"], "source": source, "course_suggestion": None, "points": points, "added": added}
 
     def suggest(conversation_id: int, config: dict[str, Any]) -> dict[str, Any]:

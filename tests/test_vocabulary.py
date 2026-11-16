@@ -190,6 +190,13 @@ class VocabularyTest(DatabaseTest):
         self.assertEqual(accepted.status_code, 200)
         self.assertIn('外键约束', accepted.json()['tags'])
 
+    def test_curation_rejects_invalid_tag_names_with_400(self):
+        before = self.client.get(f'/api/conversations/{self.cid}').json()['tags']
+        for name in ('#', 'x' * 60):
+            response = self.client.patch(f'/api/conversations/{self.cid}', json={'tags': [name]})
+            self.assertEqual(response.status_code, 400, name)
+        self.assertEqual(self.client.get(f'/api/conversations/{self.cid}').json()['tags'], before)
+
     def test_backup_round_trip_keeps_aliases_and_old_backups_still_restore(self):
         client = self.client
         source = self.create_tag('错题').json()

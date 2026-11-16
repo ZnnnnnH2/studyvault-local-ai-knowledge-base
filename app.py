@@ -872,7 +872,10 @@ def curate_conversation(conversation_id: int, payload: CurationInput) -> dict[st
         resolved_tags: list[tuple[int, str]] = []
         if payload.tags is not None:
             for name in tags:
-                created = create_or_get_tag(db, DEMO_USER_ID, name, payload.tags_allow_similar)
+                try:
+                    created = create_or_get_tag(db, DEMO_USER_ID, name, payload.tags_allow_similar)
+                except ValueError as exc:
+                    raise HTTPException(400, f"标签「{name}」无效：{exc}") from exc
                 resolved_tags.append((int(created["tag_id"]), created["tag_name"]))
             resolved_tags = list(dict.fromkeys(resolved_tags))
             db.execute("DELETE FROM conversation_tag WHERE conversation_id=?", (conversation_id,))

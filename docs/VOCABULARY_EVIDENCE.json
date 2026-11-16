@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "dataset": "5 controlled fixture conversations; not the bundled historical corpus",
+  "javascript_errors": [],
+  "checks": [
+    "existing vocabulary listed with usage",
+    "near-duplicate tag prompts and can be explicitly created",
+    "tag merge moves links and keeps alias",
+    "tag rename keeps alias",
+    "point near-duplicate prompt and merge",
+    "conversation picker selects existing term",
+    "conversation picker prompts on near-duplicate",
+    "detail creates a new point",
+    "deep-reading topic adopted through the tag picker"
+  ],
+  "screenshots": [
+    "01-vocab-tags.png",
+    "02-vocab-points.png",
+    "03-conversation-picker.png",
+    "04-existing-tag-menu.png"
+  ]
+}

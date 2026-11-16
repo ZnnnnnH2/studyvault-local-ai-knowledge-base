@@ -49,7 +49,7 @@ uv run python app.py --import-local
 | DeepSeek | `%USERPROFILE%\.dsh\sessions` | `DEEPSEEK_DATA_ROOT` |
 | Gemini CLI | `%USERPROFILE%\.gemini\tmp` 下的 `chats` | `GEMINI_DATA_ROOT` |
 
-解析 `.jsonl.zst` / `.jsonl.zstd` 时，需要 `zstd` 命令可在 PATH 找到。可先用 `Get-Command zstd` 和 `zstd --version` 检查。没有 zstd 时，可先恢复附带的普通 JSONL，或扫描未压缩记录。解析器仅保留可读取的用户/助手正文，执行确定性凭据脱敏，并跳过没有正文的工具事件文件。
+解析 `.jsonl.zst` / `.jsonl.zstd` 时优先使用 `uv sync` 安装的 Python `zstandard` 依赖，不再要求系统 PATH 中有 `zstd`；只有在 Python 依赖不可用时才回退到 `zstd` 命令。压缩读取会逐帧验证完整性，尾部截断、半文件或后续帧损坏会作为解压失败处理，不会把部分会话写入数据库。解析器仅保留可读取的用户/助手正文，执行确定性凭据脱敏，并跳过没有正文的工具事件文件。
 
 ## 页面演示
 
@@ -68,9 +68,11 @@ uv run python app.py --import-local
 - “学习待办”汇总疑问、纠错和重点/待练习，支持解决、重开和原消息定位。
 - 正文支持 Markdown、公式、表格和代码复制，前端依赖本地提供；原消息按原文保存。
 - “复习卡管理”可编辑题目答案、暂停/恢复和调整到期时间，已有复习记录保持不变。
+- “主题词库”统一管理标签与知识点：输入时先列已有词汇，同名直接复用；遇到“外键”“外键约束”这类相近名称先提示，只有明确确认才新建。词库页支持重命名和合并，旧名保留为别名，重复恢复快照不会重建已合并词条。深读标注主题仍为只读，可在会话详情中“加入标签”后按同一规则采纳。
+- 消息批注可直接关联多个知识点；知识点词库的“笔记”页汇总这些消息批注并保留原消息回看入口，也可以直接写不依赖消息的独立笔记。
 - 会话可收藏，支持只看收藏及总览最近阅读；筛选、页码、会话和消息位置会保存到 SQLite。
 - “导入与备份”可预览上传的 Agent JSON/JSONL、选择入库、查看进度和停止后续文件；每批最多 20 个文件、100 MB。
-- 同页提供完整 SQLite 备份下载和恢复。恢复先校验预览，勾选确认后应用，自动保留恢复前备份；备份上传最多 200 MB。完整备份包含批注、人工整理、复习历史、收藏和设置。
+- 同页提供完整 SQLite 备份下载和恢复。恢复先校验预览，勾选确认后应用，自动保留恢复前备份；备份上传最多 200 MB。完整备份包含批注、批注知识点关联、知识点独立笔记、人工整理、复习历史、收藏、设置和词库别名。
 
 完整库恢复适用于本地单进程服务，沿用上面的启动命令，不额外配置多个 Uvicorn worker。预览和后台任务在服务进程内运行，重启后需重新预览；已成功入库的数据保留。恢复前备份位于数据库旁 `backups/`，页面提供下载入口。
 
@@ -81,6 +83,8 @@ uv run --group dev python -m unittest discover -s tests -v
 uv run --group dev python tests/browser_check.py
 uv run --group dev python tests/additional_browser_check.py
 uv run --group dev python tests/usability_browser_check.py
+uv run --group dev python tests/vocabulary_browser_check.py
+uv run --group dev python tests/annotation_points_browser_check.py
 ```
 
 浏览器检查默认使用本机 Microsoft Edge，无需额外下载 Playwright Chromium；没有 Edge 的机器需要先安装 Edge。测试使用临时数据库和受控文件，不扫描个人 Agent 目录。
@@ -91,7 +95,7 @@ uv run --group dev python tests/usability_browser_check.py
 uv run --group dev python tests/browser_check.py --capture-report
 ```
 
-该命令先执行页面回归，再在临时库恢复全部附带数据、完成真实批注与复习演示，更新 `docs/screenshots/` 和 `docs/IMPLEMENTATION_EVIDENCE.json`；不会把演示批注写入日常使用的数据库。
+该命令先执行页面回归，再在临时库恢复全部附带数据、完成真实批注与复习演示，更新 `docs/screenshots/` 和 `docs/IMPLEMENTATION_EVIDENCE.json`；不会把演示批注写入日常使用的数据库。主题词库和笔记关联截图分别由 `tests/vocabulary_browser_check.py`、`tests/annotation_points_browser_check.py` 生成。
 
 ## 文档与数据库设计
 
@@ -100,6 +104,9 @@ uv run --group dev python tests/browser_check.py --capture-report
 - [整改验收](docs/IMPLEMENTATION_VERIFICATION.md)：测试结果和与原核查的对应关系。
 - [附加功能与相关研究](docs/ADDITIONAL_FEATURES.md)：消息定位、人工整理、逐次复习历史，论文/项目来源及待扩展方向。
 - [七项可用性增强](docs/USABILITY_FEATURES.md)：复习揭晓、待办、备份、排版、卡片管理、收藏与阅读状态、导入预览和进度。
+- [主题词库](docs/VOCABULARY_FEATURES.md)：已有词汇优先、近似词提示、标签/知识点合并与别名恢复。
+- [笔记与知识点关联](docs/ANNOTATION_POINTS.md)：批注直接关联多个知识点、知识点汇总页与独立笔记。
+- [验收问题修复](docs/ACCEPTANCE_FIXES_2026-11-15.md)：规则知识点改名/合并后的导入关联修复。
 - [实施计划](docs/USABILITY_PLAN.md)：本轮实施顺序及验收条件。
 - `docs/HW2_REQUIREMENTS_REVIEW.md` 及两份 `HW2_*EVIDENCE.json` 保留整改前基线，不能作为当前失败状态判断。
 - `staging/structure_and_sync.py` 为历史处理脚本，依赖未附带的旧输入；标准恢复请使用 `--restore-bundled`。
@@ -108,6 +115,8 @@ uv run --group dev python tests/browser_check.py --capture-report
 
 - 会话库支持按知识点、批注状态（未解决/已解决）和复习状态（到期/已有卡片/尚无卡片）筛选；`GET /api/conversations` 与 `GET /api/search` 共用同一组筛选条件，`/api/search` 还会结合 SQLite FTS5（`message_fts`）返回匹配原因。
 - 自动规则识别出的知识点关系以 `PROPOSED` 状态进入 `conversation_point`，并在 `evidence` 中记录命中的关键词；用户可在会话详情中确认或拒绝（`POST /api/conversations/{id}/points/{point_id}`），也可手动添加（`POST /api/conversations/{id}/points`）。
+- 标签与知识点词库：`GET /api/tags`、`POST /api/tags`、`PATCH /api/tags/{id}`、`POST /api/tags/{target}/merge`；`GET /api/knowledge-points/suggest`、`POST /api/knowledge-points`、`PATCH /api/knowledge-points/{id}`、`POST /api/knowledge-points/{target}/merge`。同名复用；近似名称返回 409 和 `suggestions`，只有 `allow_similar=true` 才新建。会话内添加也接受 `{tag_id}` / `{point_id}` 或 `{tag_name}` / `{point_name, allow_similar}`。
+- 笔记与知识点直接关联：`POST/PATCH /api/annotations` 可带 `point_ids`，批注返回 `points`；`GET /api/knowledge-points/{id}/notes` 汇总消息笔记和独立笔记；`POST /api/knowledge-points/{id}/notes`、`PATCH/DELETE /api/point-notes/{id}` 管理独立笔记。关联知识点必须属于会话课程，合并知识点或改课时会自动迁移。
 - 消息批注支持编辑、删除，疑问/纠错/重点可在会话详情或“学习待办”中标记解决和重新打开（`PATCH /api/annotations/{id}`）；普通笔记不属于待办。
 - `PATCH /api/conversations/{id}` 可人工修订课程、标题、摘要和标签，修订记录写入 `audit_log`，重复恢复附带数据时不会覆盖人工修订。
 - 数据统计页的“知识漏洞与复习优先级”按知识点汇总未解决批注（×3）、逾期复习卡（×2）和 `review_log` 中的答错次数（×2）。

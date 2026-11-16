@@ -208,7 +208,7 @@ async def capture_report(browser, base_url: str) -> dict:
     await expect(page.locator('.message').first).to_be_visible()
     await screenshot('03-search-detail.png')
     message = page.locator('.message').first
-    await message.locator('.annotation-form input').fill('重点：外键维护参照完整性，子表引用的值必须在父表真实存在或为 NULL。')
+    await message.locator('.annotation-form input[aria-label="批注内容"]').fill('重点：外键维护参照完整性，子表引用的值必须在父表真实存在或为 NULL。')
     await message.locator('.annotation-form select').select_option('IMPORTANT')
     await message.locator('.annotation-form button').click()
     await expect(page.locator('.annotation')).to_have_count(1)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 import re
@@ -18,6 +19,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from vocabulary import create_or_get_point, create_or_get_tag, ensure_point, ensure_tag, suggest_points
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("STUDYVAULT_DB", BASE_DIR / "studyvault.db"))
@@ -125,7 +128,8 @@ def init_db() -> None:
         courses = {r["course_name"]: r["course_id"] for r in db.execute("SELECT course_id,course_name FROM course")}
         for course_name, terms in [("数据库系统概论", ["数据库完整性", "SQL 与查询", "事务与并发"]), ("程序设计与工程实践", ["软件工程与测试"])] :
             for point in terms:
-                db.execute("INSERT OR IGNORE INTO knowledge_point(course_id, point_name, level_no) VALUES(?,?,1)", (courses[course_name], point))
+                # Resolve aliases so a renamed seed point is not recreated on the next start/restore.
+                ensure_point(db, courses[course_name], point)
 
 
 def text_from(value: Any) -> str:
@@ -159,6 +163,61 @@ def clean_import_text(text: str) -> str:
     return redact_sensitive(INTERNAL_BLOCK.sub("", text)).strip()
 
 
+def zstd_decompressed_chunks(path: Path, zstandard_module: Any, chunk_size: int = 128 * 1024) -> Iterator[bytes]:
+    """Yield decompressed bytes only after every zstd frame is known to be complete.
+
+    ``stream_reader`` silently treats a truncated frame as normal end-of-file,
+    which would let an incomplete JSONL session be imported.  Feeding a
+    decompressobj frame by frame exposes ``eof``; every frame must reach it
+    before the file is accepted.
+    """
+    decompressor = zstandard_module.ZstdDecompressor()
+    current = None
+    frames = 0
+    try:
+        with path.open("rb") as stream:
+            while True:
+                block = stream.read(chunk_size)
+                if not block:
+                    break
+                while block:
+                    if current is None:
+                        current = decompressor.decompressobj()
+                    output = current.decompress(block)
+                    if output:
+                        yield output
+                    if current.eof:
+                        frames += 1
+                        block = current.unused_data
+                        current = None
+                    else:
+                        block = b""
+            if current is not None:
+                output = current.decompress(b"")
+                if output:
+                    yield output
+                if not current.eof:
+                    raise RuntimeError(f"压缩帧不完整或文件被截断: {path}")
+                frames += 1
+    except (OSError, zstandard_module.ZstdError) as exc:
+        raise RuntimeError(f"解压会话失败: {path}") from exc
+    if frames == 0:
+        raise RuntimeError(f"压缩文件不包含完整帧: {path}")
+
+
+def zstd_text_lines(path: Path, zstandard_module: Any) -> Iterator[str]:
+    decoder = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
+    pending = ""
+    for chunk in zstd_decompressed_chunks(path, zstandard_module):
+        pending += decoder.decode(chunk)
+        while "\n" in pending:
+            line, pending = pending.split("\n", 1)
+            yield line
+    pending += decoder.decode(b"", final=True)
+    if pending:
+        yield pending
+
+
 def iter_records(path: Path):
     if path.suffix == ".json":
         payload = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
@@ -177,9 +236,23 @@ def iter_records(path: Path):
             return
         return
     if path.suffix in {".zst", ".zstd"}:
+        # Prefer the Python dependency so a system zstd CLI is not required.
+        try:
+            import zstandard
+        except ImportError:
+            zstandard = None
+        if zstandard is not None:
+            for line in zstd_text_lines(path, zstandard):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    yield record
+            return
         executable = shutil.which("zstd") or str(Path.home() / "scoop" / "apps" / "miniconda3" / "current" / "Library" / "bin" / "zstd.exe")
         if not Path(executable).exists() and not shutil.which("zstd"):
-            raise RuntimeError(f"读取压缩会话需要 zstd: {path}")
+            raise RuntimeError(f"读取压缩会话需要 zstandard 或 zstd: {path}")
         process = subprocess.Popen([executable, "-dc", str(path)], stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
         assert process.stdout is not None
         for line in process.stdout:
@@ -290,11 +363,6 @@ def guess_course(text: str) -> str:
     return "通用学习"
 
 
-def ensure_tag(db: sqlite3.Connection, name: str) -> int:
-    db.execute("INSERT OR IGNORE INTO tag(owner_id, tag_name) VALUES(?,?)", (DEMO_USER_ID, name))
-    return int(db.execute("SELECT tag_id FROM tag WHERE owner_id=? AND tag_name=?", (DEMO_USER_ID, name)).fetchone()[0])
-
-
 def source_row(db: sqlite3.Connection, platform: str) -> sqlite3.Row:
     return db.execute("SELECT * FROM conversation_source WHERE platform_name=?", (platform,)).fetchone()
 
@@ -313,22 +381,28 @@ def import_parsed(parsed: dict[str, Any], platform: str) -> dict[str, Any]:
             return {"status": "SKIPPED", "result_code": "SKIPPED_DUPLICATE", "path": str(path), "conversation_id": duplicate["conversation_id"], "messages": 0}
         course_name = guess_course(parsed["title"] + " " + " ".join(m["content"] for m in parsed["messages"][:10]))
         course = db.execute("SELECT course_id FROM course WHERE course_name=?", (course_name,)).fetchone()
-        job = db.execute("INSERT INTO import_job(owner_id,source_id,file_name,source_conversation_id,status,result_code) VALUES(?,?,?,?,?,?)", (DEMO_USER_ID, source["source_id"], str(path), parsed["source_id"], "SUCCESS", "SUCCESS"))
-        conversation = db.execute("INSERT INTO conversation(owner_id,course_id,source_id,import_job_id,source_conversation_id,title,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (DEMO_USER_ID, course[0], source["source_id"], job.lastrowid, parsed["source_id"], parsed["title"], parsed["started_at"], now()))
+        job = db.execute(
+            "INSERT INTO import_job(owner_id,source_id,file_name,source_conversation_id,status,result_code) VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(owner_id,source_id,file_name,source_conversation_id) DO UPDATE SET "
+            "status='SUCCESS',result_code='SUCCESS',error_message=NULL,total_messages=0,created_at=CURRENT_TIMESTAMP "
+            "RETURNING import_job_id",
+            (DEMO_USER_ID, source["source_id"], str(path), parsed["source_id"], "SUCCESS", "SUCCESS")).fetchone()
+        conversation = db.execute("INSERT INTO conversation(owner_id,course_id,source_id,import_job_id,source_conversation_id,title,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (DEMO_USER_ID, course[0], source["source_id"], job["import_job_id"], parsed["source_id"], parsed["title"], parsed["started_at"], now()))
         conversation_id = conversation.lastrowid
         for seq, message in enumerate(parsed["messages"], 1):
             db.execute("INSERT INTO message(conversation_id,seq_no,speaker,content,created_at) VALUES(?,?,?,?,?)", (conversation_id, seq, message["speaker"], message["content"], message["created_at"]))
         whole = (parsed["title"] + " " + " ".join(m["content"] for m in parsed["messages"])).lower()
         for tag_name in re.findall(r"#[\w\u4e00-\u9fff-]+", whole):
-            tag_id = ensure_tag(db, tag_name[1:][:50])
+            tag_id = ensure_tag(db, tag_name[1:][:50], DEMO_USER_ID)
             db.execute("INSERT OR IGNORE INTO conversation_tag VALUES(?,?)", (conversation_id, tag_id))
         for point_name, terms in POINT_RULES:
             matched_terms = [term for term in terms if term.lower() in whole]
             if matched_terms:
-                point = db.execute("SELECT point_id FROM knowledge_point WHERE course_id=? AND point_name=?", (course[0], point_name)).fetchone()
-                if point:
-                    db.execute("INSERT OR IGNORE INTO conversation_point(conversation_id,point_id,source,evidence,status) VALUES(?,?,?,?,?)", (conversation_id, point[0], "rule", json.dumps(matched_terms, ensure_ascii=False), "PROPOSED"))
-        db.execute("UPDATE import_job SET total_messages=? WHERE import_job_id=?", (len(parsed["messages"]), job.lastrowid))
+                # Resolve the rule's seed name through aliases: a renamed or merged
+                # point must still receive this rule-generated link.
+                point_id = ensure_point(db, course[0], point_name)
+                db.execute("INSERT OR IGNORE INTO conversation_point(conversation_id,point_id,source,evidence,status) VALUES(?,?,?,?,?)", (conversation_id, point_id, "rule", json.dumps(matched_terms, ensure_ascii=False), "PROPOSED"))
+        db.execute("UPDATE import_job SET total_messages=? WHERE import_job_id=?", (len(parsed["messages"]), job["import_job_id"]))
         db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,after_data) VALUES(?,?,?,?,?)", (DEMO_USER_ID, "IMPORT", "conversation", conversation_id, json.dumps({"source": platform, "path": str(path)}, ensure_ascii=False)))
         return {"status": "SUCCESS", "path": str(path), "conversation_id": conversation_id, "messages": len(parsed["messages"])}
 
@@ -487,11 +561,10 @@ def restore_bundled(manifest_path: Path | None = None, annotations_path: Path | 
                 result["messages_added"] += len(row["messages"])
                 result["summaries_added"] += 1
             for name in ([] if "tags" in curated_fields else row["tags"]):
-                tag_id = ensure_tag(db, name)
+                tag_id = ensure_tag(db, name, DEMO_USER_ID)
                 result["tag_links_added"] += db.execute("INSERT OR IGNORE INTO conversation_tag(conversation_id,tag_id) VALUES(?,?)", (conversation_id, tag_id)).rowcount
             for name in row["knowledge_points"]:
-                db.execute("INSERT OR IGNORE INTO knowledge_point(course_id,point_name) VALUES(?,?)", (course_id, name))
-                point_id = db.execute("SELECT point_id FROM knowledge_point WHERE course_id=? AND point_name=?", (course_id, name)).fetchone()[0]
+                point_id = ensure_point(db, course_id, name)
                 result["point_links_added"] += db.execute("INSERT OR IGNORE INTO conversation_point(conversation_id,point_id,source) VALUES(?,?,?)", (conversation_id, point_id, "bundled")).rowcount
             note = annotations[(row["platform"], row["source_id"])]
             result["annotations_added"] += db.execute("INSERT OR IGNORE INTO conversation_annotation(conversation_id,summary_manual,intent,topics_json,key_points_json,unresolved_questions_json,action_items_json,quality,confidence,source,review_status) VALUES(?,?,?,?,?,?,?,?,?,'MANUAL','CONFIRMED')", (conversation_id, note["summary_manual"], note["intent"], *(json.dumps(note[field], ensure_ascii=False) for field in ("topics", "key_points", "unresolved_questions", "action_items")), note["quality"], note["confidence"])).rowcount
@@ -508,6 +581,7 @@ class AnnotationInput(BaseModel):
     message_id: int
     annotation_type: str
     content: str
+    point_ids: list[int] | None = None
 
 
 class ReviewInput(BaseModel):
@@ -522,6 +596,7 @@ TODO_TYPES = {"QUESTION", "CORRECTION", "IMPORTANT"}
 class AnnotationUpdate(BaseModel):
     content: str | None = None
     is_resolved: bool | None = None
+    point_ids: list[int] | None = None
 
 
 class PointDecision(BaseModel):
@@ -529,12 +604,20 @@ class PointDecision(BaseModel):
 
 
 class PointAssignment(BaseModel):
-    point_id: int
+    point_id: int | None = None
+    point_name: str | None = None
+    allow_similar: bool = False
     evidence: str = ""
 
 
 class TagInput(BaseModel):
-    tag_name: str
+    tag_id: int | None = None
+    tag_name: str | None = None
+    allow_similar: bool = False
+
+
+class PointNoteInput(BaseModel):
+    content: str
 
 
 class ClassificationReview(BaseModel):
@@ -546,6 +629,7 @@ class CurationInput(BaseModel):
     title: str | None = None
     summary: str | None = None
     tags: list[str] | None = None
+    tags_allow_similar: bool = False
 
 
 app = FastAPI(title="StudyVault", version="0.1.0")
@@ -577,8 +661,10 @@ def courses() -> list[dict[str, Any]]:
 
 
 @app.get("/api/knowledge-points")
-def knowledge_points(course_id: int | None = None) -> list[dict[str, Any]]:
+def knowledge_points(course_id: int | None = None, q: str = "") -> list[dict[str, Any]]:
     with connect() as db:
+        if q:
+            return suggest_points(db, DEMO_USER_ID, q, course_id, 200)["items"]
         if course_id is None:
             rows = db.execute("SELECT point_id,course_id,point_name FROM knowledge_point ORDER BY point_name")
         else:
@@ -708,18 +794,33 @@ def conversation_detail(conversation_id: int) -> dict[str, Any]:
         conversation = db.execute("SELECT c.*,s.platform_name,co.course_name FROM conversation c JOIN conversation_source s ON s.source_id=c.source_id JOIN course co ON co.course_id=c.course_id WHERE c.conversation_id=? AND c.owner_id=?", (conversation_id, DEMO_USER_ID)).fetchone()
         if not conversation:
             raise HTTPException(404, "会话不存在或无权访问")
+        annotation_points: dict[int, list[dict[str, Any]]] = {}
+        for row in db.execute(
+                "SELECT ap.annotation_id,kp.point_id,kp.point_name FROM annotation_point ap "
+                "JOIN annotation a ON a.annotation_id=ap.annotation_id "
+                "JOIN message m ON m.message_id=a.message_id "
+                "JOIN knowledge_point kp ON kp.point_id=ap.point_id "
+                "WHERE m.conversation_id=? ORDER BY kp.point_name", (conversation_id,)):
+            annotation_points.setdefault(int(row["annotation_id"]), []).append(
+                {"point_id": int(row["point_id"]), "point_name": row["point_name"]})
         messages = []
         for row in db.execute("SELECT * FROM message WHERE conversation_id=? ORDER BY seq_no", (conversation_id,)):
             item = dict(row)
-            item["annotations"] = [dict(a) for a in db.execute("SELECT annotation_id,annotation_type,content,is_resolved,created_at FROM annotation WHERE message_id=? ORDER BY created_at", (row["message_id"],))]
+            annotations = [dict(a) for a in db.execute("SELECT annotation_id,annotation_type,content,is_resolved,created_at FROM annotation WHERE message_id=? ORDER BY created_at,annotation_id", (row["message_id"],))]
+            for annotation in annotations:
+                annotation["points"] = annotation_points.get(int(annotation["annotation_id"]), [])
+            item["annotations"] = annotations
             item["review_card"] = next((dict(r) for r in db.execute("SELECT review_card_id,question,answer,due_at,interval_days,review_count,status FROM review_card WHERE message_id=? AND owner_id=?", (row["message_id"], DEMO_USER_ID))), None)
             messages.append(item)
         points = [dict(p) for p in db.execute("SELECT kp.point_id,kp.point_name,cp.status,cp.source,cp.evidence,cp.confirmed_at FROM knowledge_point kp JOIN conversation_point cp ON cp.point_id=kp.point_id WHERE cp.conversation_id=?", (conversation_id,))]
-        tags = [r[0] for r in db.execute("SELECT t.tag_name FROM tag t JOIN conversation_tag ct ON ct.tag_id=t.tag_id WHERE ct.conversation_id=? ORDER BY t.tag_name", (conversation_id,))]
+        tag_items = [dict(r) for r in db.execute("SELECT t.tag_id,t.tag_name FROM tag t JOIN conversation_tag ct ON ct.tag_id=t.tag_id WHERE ct.conversation_id=? ORDER BY t.tag_name", (conversation_id,))]
         review = db.execute("SELECT summary_manual,intent,topics_json,key_points_json,unresolved_questions_json,action_items_json,quality,confidence FROM conversation_annotation WHERE conversation_id=?", (conversation_id,)).fetchone()
         curation = latest_curation(db, conversation_id)
         reading = db.execute("SELECT is_favorite,last_message_id,last_opened_at FROM conversation_state WHERE conversation_id=? AND owner_id=?", (conversation_id, DEMO_USER_ID)).fetchone()
-        return {"conversation": dict(conversation), "messages": messages, "points": points, "tags": tags, "manual_annotation": dict(review) if review else None, "reading_state": dict(reading) if reading else None, "curation": {"created_at": curation["created_at"], "actor_name": curation["actor_name"], "fields": json.loads(curation["after_data"])["curated_fields"]} if curation else None}
+        return {"conversation": dict(conversation), "messages": messages, "points": points,
+                "tags": [row["tag_name"] for row in tag_items], "tag_items": tag_items,
+                "manual_annotation": dict(review) if review else None, "reading_state": dict(reading) if reading else None,
+                "curation": {"created_at": curation["created_at"], "actor_name": curation["actor_name"], "fields": json.loads(curation["after_data"])["curated_fields"]} if curation else None}
 
 
 @app.patch("/api/conversations/{conversation_id}")
@@ -751,17 +852,67 @@ def curate_conversation(conversation_id: int, payload: CurationInput) -> dict[st
             points = db.execute("SELECT kp.point_name,cp.confidence,cp.status,cp.evidence,cp.confirmed_by,cp.confirmed_at FROM conversation_point cp JOIN knowledge_point kp USING(point_id) WHERE cp.conversation_id=?", (conversation_id,)).fetchall()
             db.execute("DELETE FROM conversation_point WHERE conversation_id=?", (conversation_id,))
             for point in points:
-                db.execute("INSERT OR IGNORE INTO knowledge_point(course_id,point_name) VALUES(?,?)", (course_id, point["point_name"]))
-                point_id = db.execute("SELECT point_id FROM knowledge_point WHERE course_id=? AND point_name=?", (course_id, point["point_name"])).fetchone()[0]
+                point_id = ensure_point(db, course_id, point["point_name"])
                 db.execute("INSERT INTO conversation_point(conversation_id,point_id,confidence,source,status,evidence,confirmed_by,confirmed_at) VALUES(?,?,?,?,?,?,?,?)", (conversation_id, point_id, point["confidence"], "manual", point["status"], point["evidence"], point["confirmed_by"], point["confirmed_at"]))
+            annotation_links = db.execute(
+                "SELECT ap.annotation_id,kp.point_name,ap.created_at FROM annotation_point ap "
+                "JOIN annotation a ON a.annotation_id=ap.annotation_id "
+                "JOIN message m ON m.message_id=a.message_id "
+                "JOIN knowledge_point kp ON kp.point_id=ap.point_id "
+                "WHERE m.conversation_id=?", (conversation_id,)).fetchall()
+            if annotation_links:
+                db.execute(
+                    "DELETE FROM annotation_point WHERE annotation_id IN "
+                    "(SELECT annotation_id FROM annotation a JOIN message m ON m.message_id=a.message_id WHERE m.conversation_id=?)",
+                    (conversation_id,))
+                for link in annotation_links:
+                    point_id = ensure_point(db, course_id, link["point_name"])
+                    db.execute("INSERT OR IGNORE INTO annotation_point(annotation_id,point_id,created_at) VALUES(?,?,?)",
+                               (link["annotation_id"], point_id, link["created_at"]))
+        resolved_tags: list[tuple[int, str]] = []
         if payload.tags is not None:
-            db.execute("DELETE FROM conversation_tag WHERE conversation_id=?", (conversation_id,))
             for name in tags:
-                db.execute("INSERT INTO conversation_tag(conversation_id,tag_id) VALUES(?,?)", (conversation_id, ensure_tag(db, name)))
+                created = create_or_get_tag(db, DEMO_USER_ID, name, payload.tags_allow_similar)
+                resolved_tags.append((int(created["tag_id"]), created["tag_name"]))
+            resolved_tags = list(dict.fromkeys(resolved_tags))
+            db.execute("DELETE FROM conversation_tag WHERE conversation_id=?", (conversation_id,))
+            for tag_id, _ in resolved_tags:
+                db.execute("INSERT INTO conversation_tag(conversation_id,tag_id) VALUES(?,?)", (conversation_id, tag_id))
         db.execute("UPDATE conversation SET course_id=?,title=?,summary=?,updated_at=? WHERE conversation_id=?", (course_id, title, summary_text, now(), conversation_id))
-        after = {"course_id": course_id, "title": title, "summary": summary_text, "tags": tags if payload.tags is not None else before["tags"], "curated_fields": sorted(curated_fields)}
+        after = {"course_id": course_id, "title": title, "summary": summary_text,
+                 "tags": [name for _, name in resolved_tags] if payload.tags is not None else before["tags"],
+                 "tags_allow_similar": payload.tags_allow_similar if payload.tags is not None else None,
+                 "curated_fields": sorted(curated_fields)}
         db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,before_data,after_data) VALUES(?,?,?,?,?,?)", (DEMO_USER_ID, "CURATE", "conversation", conversation_id, json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False)))
         return {"conversation_id": conversation_id, **after}
+
+
+def annotation_point_rows(db: sqlite3.Connection, annotation_id: int) -> list[dict[str, Any]]:
+    return [dict(row) for row in db.execute(
+        "SELECT kp.point_id,kp.point_name FROM annotation_point ap "
+        "JOIN knowledge_point kp ON kp.point_id=ap.point_id "
+        "WHERE ap.annotation_id=? ORDER BY kp.point_name", (annotation_id,))]
+
+
+def validate_annotation_points(db: sqlite3.Connection, course_id: int, point_ids: list[int] | None) -> list[int]:
+    """Deduplicate and require every linked point to belong to the conversation course."""
+    if not point_ids:
+        return []
+    unique = list(dict.fromkeys(int(point_id) for point_id in point_ids))
+    placeholders = ",".join("?" for _ in unique)
+    rows = db.execute(
+        f"SELECT point_id FROM knowledge_point WHERE course_id=? AND point_id IN ({placeholders})",
+        (course_id, *unique)).fetchall()
+    found = {int(row["point_id"]) for row in rows}
+    if len(found) != len(unique):
+        raise HTTPException(400, "关联知识点不存在或不属于该会话课程")
+    return unique
+
+
+def replace_annotation_points(db: sqlite3.Connection, annotation_id: int, point_ids: list[int]) -> None:
+    db.execute("DELETE FROM annotation_point WHERE annotation_id=?", (annotation_id,))
+    for point_id in point_ids:
+        db.execute("INSERT OR IGNORE INTO annotation_point(annotation_id,point_id) VALUES(?,?)", (annotation_id, point_id))
 
 
 @app.post("/api/annotations")
@@ -769,12 +920,16 @@ def create_annotation(payload: AnnotationInput) -> dict[str, Any]:
     if payload.annotation_type not in {"NOTE", "QUESTION", "CORRECTION", "IMPORTANT"} or not payload.content.strip():
         raise HTTPException(400, "批注类型或内容无效")
     with connect() as db:
-        allowed = db.execute("SELECT 1 FROM message m JOIN conversation c ON c.conversation_id=m.conversation_id WHERE m.message_id=? AND c.owner_id=?", (payload.message_id, DEMO_USER_ID)).fetchone()
+        allowed = db.execute("SELECT c.course_id FROM message m JOIN conversation c ON c.conversation_id=m.conversation_id WHERE m.message_id=? AND c.owner_id=?", (payload.message_id, DEMO_USER_ID)).fetchone()
         if not allowed:
             raise HTTPException(403, "无权批注此消息")
+        point_ids = validate_annotation_points(db, int(allowed["course_id"]), payload.point_ids)
         row = db.execute("INSERT INTO annotation(message_id,author_id,annotation_type,content) VALUES(?,?,?,?) RETURNING annotation_id,annotation_type,content,is_resolved,created_at", (payload.message_id, DEMO_USER_ID, payload.annotation_type, payload.content.strip())).fetchone()
-        db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,after_data) VALUES(?,?,?,?,?)", (DEMO_USER_ID, "CREATE", "annotation", row[0], json.dumps(payload.model_dump(), ensure_ascii=False)))
-        return dict(row)
+        replace_annotation_points(db, int(row["annotation_id"]), point_ids)
+        data = dict(row)
+        data["points"] = annotation_point_rows(db, int(row["annotation_id"]))
+        db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,after_data) VALUES(?,?,?,?,?)", (DEMO_USER_ID, "CREATE", "annotation", row[0], json.dumps({**payload.model_dump(), "point_ids": point_ids}, ensure_ascii=False)))
+        return data
 
 
 @app.get("/api/annotations")
@@ -786,13 +941,16 @@ def list_annotations(is_resolved: bool | None = None, message_id: int | None = N
     if message_id is not None:
         where.append("a.message_id=?"); args.append(message_id)
     with connect() as db:
-        return [dict(row) for row in db.execute(f"SELECT a.*,m.conversation_id,c.title FROM annotation a JOIN message m ON m.message_id=a.message_id JOIN conversation c ON c.conversation_id=m.conversation_id WHERE {' AND '.join(where)} ORDER BY a.updated_at DESC", args)]
+        rows = [dict(row) for row in db.execute(f"SELECT a.*,m.conversation_id,c.title FROM annotation a JOIN message m ON m.message_id=a.message_id JOIN conversation c ON c.conversation_id=m.conversation_id WHERE {' AND '.join(where)} ORDER BY a.updated_at DESC", args)]
+        for row in rows:
+            row["points"] = annotation_point_rows(db, int(row["annotation_id"]))
+        return rows
 
 
 @app.patch("/api/annotations/{annotation_id}")
 def update_annotation(annotation_id: int, payload: AnnotationUpdate) -> dict[str, Any]:
     with connect() as db:
-        row = db.execute("SELECT a.* FROM annotation a JOIN message m ON m.message_id=a.message_id JOIN conversation c ON c.conversation_id=m.conversation_id WHERE a.annotation_id=? AND c.owner_id=?", (annotation_id, DEMO_USER_ID)).fetchone()
+        row = db.execute("SELECT a.*,c.course_id FROM annotation a JOIN message m ON m.message_id=a.message_id JOIN conversation c ON c.conversation_id=m.conversation_id WHERE a.annotation_id=? AND c.owner_id=?", (annotation_id, DEMO_USER_ID)).fetchone()
         if not row:
             raise HTTPException(404, "批注不存在")
         if payload.is_resolved is not None and row["annotation_type"] not in TODO_TYPES:
@@ -800,10 +958,20 @@ def update_annotation(annotation_id: int, payload: AnnotationUpdate) -> dict[str
         content = payload.content.strip() if payload.content is not None else row["content"]
         if not content:
             raise HTTPException(400, "批注内容不能为空")
+        old_points = annotation_point_rows(db, annotation_id)
+        point_ids = None
+        if payload.point_ids is not None:
+            point_ids = validate_annotation_points(db, int(row["course_id"]), payload.point_ids)
         resolved = int(payload.is_resolved) if payload.is_resolved is not None else row["is_resolved"]
         updated = db.execute("UPDATE annotation SET content=?,is_resolved=?,updated_at=? WHERE annotation_id=? RETURNING *", (content, resolved, now(), annotation_id)).fetchone()
-        db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,before_data,after_data) VALUES(?,?,?,?,?,?)", (DEMO_USER_ID, "UPDATE", "annotation", annotation_id, json.dumps(dict(row), ensure_ascii=False), json.dumps(dict(updated), ensure_ascii=False)))
-        return dict(updated)
+        if point_ids is not None:
+            replace_annotation_points(db, annotation_id, point_ids)
+        data = dict(updated)
+        data["points"] = annotation_point_rows(db, annotation_id)
+        before = dict(row)
+        before["points"] = old_points
+        db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,before_data,after_data) VALUES(?,?,?,?,?,?)", (DEMO_USER_ID, "UPDATE", "annotation", annotation_id, json.dumps(before, ensure_ascii=False), json.dumps(data, ensure_ascii=False)))
+        return data
 
 
 @app.post("/api/annotations/{annotation_id}/resolve")
@@ -822,6 +990,96 @@ def delete_annotation(annotation_id: int) -> dict[str, Any]:
         return {"deleted": True, "annotation_id": annotation_id}
 
 
+@app.get("/api/knowledge-points/{point_id}/notes")
+def knowledge_point_notes(point_id: int, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)) -> dict[str, Any]:
+    """Message notes linked through annotation_point plus independent point_note rows."""
+    message_sql = """
+        SELECT 'message' AS source,a.annotation_id AS id,a.content,a.created_at,a.updated_at,
+               a.is_resolved,a.annotation_type,m.message_id,m.seq_no,m.content AS message_content,
+               c.conversation_id,c.title
+        FROM annotation_point ap
+        JOIN annotation a ON a.annotation_id=ap.annotation_id
+        JOIN message m ON m.message_id=a.message_id
+        JOIN conversation c ON c.conversation_id=m.conversation_id
+        WHERE ap.point_id=? AND c.owner_id=?"""
+    point_sql = """
+        SELECT 'point' AS source,pn.point_note_id AS id,pn.content,pn.created_at,pn.updated_at,
+               NULL AS is_resolved,NULL AS annotation_type,NULL AS message_id,NULL AS seq_no,
+               NULL AS message_content,NULL AS conversation_id,NULL AS title
+        FROM point_note pn WHERE pn.point_id=? AND pn.author_id=?"""
+    combined = f"{message_sql} UNION ALL {point_sql}"
+    with connect() as db:
+        point = db.execute(
+            "SELECT kp.point_id,kp.point_name,kp.course_id,co.course_name FROM knowledge_point kp "
+            "JOIN course co ON co.course_id=kp.course_id WHERE kp.point_id=?", (point_id,)).fetchone()
+        if not point:
+            raise HTTPException(404, "知识点不存在")
+        params = (point_id, DEMO_USER_ID, point_id, DEMO_USER_ID)
+        total = db.execute(f"SELECT COUNT(*) FROM ({combined})", params).fetchone()[0]
+        rows = [dict(row) for row in db.execute(
+            f"SELECT * FROM ({combined}) ORDER BY datetime(created_at) DESC,source DESC,id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset))]
+        for item in rows:
+            message_content = item.pop("message_content", None)
+            if message_content:
+                item["message_excerpt"] = message_content[:160] + ("…" if len(message_content) > 160 else "")
+        return {"point": dict(point), "items": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@app.post("/api/knowledge-points/{point_id}/notes")
+def create_point_note(point_id: int, payload: PointNoteInput) -> dict[str, Any]:
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(400, "笔记内容不能为空")
+    if len(content) > 4000:
+        raise HTTPException(400, "笔记不能超过 4000 个字符")
+    with connect() as db:
+        if not db.execute("SELECT 1 FROM knowledge_point WHERE point_id=?", (point_id,)).fetchone():
+            raise HTTPException(404, "知识点不存在")
+        timestamp = now()
+        row = db.execute(
+            "INSERT INTO point_note(point_id,author_id,content,created_at,updated_at) VALUES(?,?,?,?,?) "
+            "RETURNING point_note_id,point_id,content,created_at,updated_at",
+            (point_id, DEMO_USER_ID, content, timestamp, timestamp)).fetchone()
+        data = dict(row)
+        data["source"] = "point"
+        db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,after_data) VALUES(?,?,?,?,?)",
+                   (DEMO_USER_ID, "CREATE", "point_note", row["point_note_id"], json.dumps(data, ensure_ascii=False)))
+        return data
+
+
+@app.patch("/api/point-notes/{note_id}")
+def update_point_note(note_id: int, payload: PointNoteInput) -> dict[str, Any]:
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(400, "笔记内容不能为空")
+    if len(content) > 4000:
+        raise HTTPException(400, "笔记不能超过 4000 个字符")
+    with connect() as db:
+        old = db.execute("SELECT * FROM point_note WHERE point_note_id=? AND author_id=?", (note_id, DEMO_USER_ID)).fetchone()
+        if not old:
+            raise HTTPException(404, "知识点笔记不存在")
+        row = db.execute(
+            "UPDATE point_note SET content=?,updated_at=? WHERE point_note_id=? "
+            "RETURNING point_note_id,point_id,content,created_at,updated_at", (content, now(), note_id)).fetchone()
+        data = dict(row)
+        db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,before_data,after_data) VALUES(?,?,?,?,?,?)",
+                   (DEMO_USER_ID, "UPDATE", "point_note", note_id, json.dumps(dict(old), ensure_ascii=False), json.dumps(data, ensure_ascii=False)))
+        return data
+
+
+@app.delete("/api/point-notes/{note_id}")
+def delete_point_note(note_id: int) -> dict[str, Any]:
+    with connect() as db:
+        old = db.execute("SELECT * FROM point_note WHERE point_note_id=? AND author_id=?", (note_id, DEMO_USER_ID)).fetchone()
+        if not old:
+            raise HTTPException(404, "知识点笔记不存在")
+        db.execute("DELETE FROM point_note WHERE point_note_id=?", (note_id,))
+        db.execute("INSERT INTO audit_log(actor_id,operation,table_name,record_id,before_data) VALUES(?,?,?,?,?)",
+                   (DEMO_USER_ID, "DELETE", "point_note", note_id, json.dumps(dict(old), ensure_ascii=False)))
+        return {"deleted": True, "point_note_id": note_id}
+
+
 @app.post("/api/conversations/{conversation_id}/points/{point_id}")
 def decide_point(conversation_id: int, point_id: int, payload: PointDecision) -> dict[str, Any]:
     if payload.status not in {"CONFIRMED", "REJECTED"}:
@@ -837,29 +1095,71 @@ def decide_point(conversation_id: int, point_id: int, payload: PointDecision) ->
         return dict(row)
 
 
-@app.post("/api/conversations/{conversation_id}/points")
-def add_point(conversation_id: int, payload: PointAssignment) -> dict[str, Any]:
-    with connect() as db:
-        conversation = db.execute("SELECT course_id FROM conversation WHERE conversation_id=? AND owner_id=?", (conversation_id, DEMO_USER_ID)).fetchone()
-        point = db.execute("SELECT point_id FROM knowledge_point WHERE point_id=? AND course_id=?", (payload.point_id, conversation[0] if conversation else -1)).fetchone()
-        if not conversation or not point:
-            raise HTTPException(404, "会话或课程知识点不存在")
-        db.execute("INSERT OR IGNORE INTO conversation_point(conversation_id,point_id,source,evidence,status,confirmed_by,confirmed_at) VALUES(?,?, 'manual', ?, 'CONFIRMED', ?, ?)", (conversation_id, payload.point_id, payload.evidence.strip() or None, DEMO_USER_ID, now()))
-        return dict(db.execute("SELECT conversation_id,point_id,status,source,evidence,confirmed_by,confirmed_at FROM conversation_point WHERE conversation_id=? AND point_id=?", (conversation_id, payload.point_id)).fetchone())
-
-
-@app.post("/api/conversations/{conversation_id}/tags")
-def add_tag(conversation_id: int, payload: TagInput) -> dict[str, Any]:
-    name = payload.tag_name.strip().lstrip("#")
-    if not name:
-        raise HTTPException(400, "标签不能为空")
+@app.delete("/api/conversations/{conversation_id}/points/{point_id}")
+def remove_point(conversation_id: int, point_id: int) -> dict[str, Any]:
     with connect() as db:
         allowed = db.execute("SELECT 1 FROM conversation WHERE conversation_id=? AND owner_id=?", (conversation_id, DEMO_USER_ID)).fetchone()
         if not allowed:
             raise HTTPException(404, "会话不存在")
-        tag_id = ensure_tag(db, name[:50])
+        deleted = db.execute("DELETE FROM conversation_point WHERE conversation_id=? AND point_id=?", (conversation_id, point_id)).rowcount
+        return {"deleted": bool(deleted), "conversation_id": conversation_id, "point_id": point_id}
+
+
+@app.post("/api/conversations/{conversation_id}/points")
+def add_point(conversation_id: int, payload: PointAssignment) -> dict[str, Any]:
+    if (payload.point_id is None) == (payload.point_name is None):
+        raise HTTPException(400, "请提供已有知识点 ID 或新知识点名称")
+    with connect() as db:
+        conversation = db.execute("SELECT course_id FROM conversation WHERE conversation_id=? AND owner_id=?", (conversation_id, DEMO_USER_ID)).fetchone()
+        if not conversation:
+            raise HTTPException(404, "会话不存在")
+        if payload.point_id is not None:
+            point = db.execute("SELECT point_id,point_name FROM knowledge_point WHERE point_id=? AND course_id=?", (payload.point_id, conversation["course_id"])).fetchone()
+            if not point:
+                raise HTTPException(404, "课程知识点不存在")
+            point_id, point_name = int(point["point_id"]), point["point_name"]
+            created = False
+        else:
+            try:
+                result = create_or_get_point(db, DEMO_USER_ID, conversation["course_id"], payload.point_name, payload.allow_similar)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            point_id, point_name = int(result["point_id"]), result["point_name"]
+            created = bool(result["created"])
+        db.execute(
+            "INSERT INTO conversation_point(conversation_id,point_id,source,evidence,status,confirmed_by,confirmed_at) "
+            "VALUES(?,?, 'manual', ?, 'CONFIRMED', ?, ?) "
+            "ON CONFLICT(conversation_id,point_id) DO UPDATE SET status='CONFIRMED',source='manual',"
+            "confirmed_by=excluded.confirmed_by,confirmed_at=excluded.confirmed_at",
+            (conversation_id, point_id, payload.evidence.strip() or None, DEMO_USER_ID, now()))
+        row = dict(db.execute("SELECT conversation_id,point_id,status,source,evidence,confirmed_by,confirmed_at FROM conversation_point WHERE conversation_id=? AND point_id=?", (conversation_id, point_id)).fetchone())
+        row.update(point_name=point_name, created=created, created_point=created)
+        return row
+
+
+@app.post("/api/conversations/{conversation_id}/tags")
+def add_tag(conversation_id: int, payload: TagInput) -> dict[str, Any]:
+    if (payload.tag_id is None) == (payload.tag_name is None):
+        raise HTTPException(400, "请提供已有标签 ID 或新标签名称")
+    with connect() as db:
+        allowed = db.execute("SELECT 1 FROM conversation WHERE conversation_id=? AND owner_id=?", (conversation_id, DEMO_USER_ID)).fetchone()
+        if not allowed:
+            raise HTTPException(404, "会话不存在")
+        created = False
+        if payload.tag_id is not None:
+            tag = db.execute("SELECT tag_id,tag_name FROM tag WHERE tag_id=? AND owner_id=?", (payload.tag_id, DEMO_USER_ID)).fetchone()
+            if not tag:
+                raise HTTPException(404, "标签不存在")
+            tag_id, tag_name = int(tag["tag_id"]), tag["tag_name"]
+        else:
+            try:
+                result = create_or_get_tag(db, DEMO_USER_ID, payload.tag_name, payload.allow_similar)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            tag_id, tag_name = int(result["tag_id"]), result["tag_name"]
+            created = bool(result["created"])
         db.execute("INSERT OR IGNORE INTO conversation_tag(conversation_id,tag_id) VALUES(?,?)", (conversation_id, tag_id))
-        return {"conversation_id": conversation_id, "tag_id": tag_id, "tag_name": name[:50]}
+        return {"conversation_id": conversation_id, "tag_id": tag_id, "tag_name": tag_name, "created": created}
 
 
 @app.delete("/api/conversations/{conversation_id}/tags/{tag_id}")
@@ -1018,6 +1318,9 @@ def export_course(course_id: int) -> Response:
 
 from usability import create_router
 app.include_router(create_router(sys.modules[__name__]))
+
+from vocabulary import create_router as create_vocabulary_router
+app.include_router(create_vocabulary_router(sys.modules[__name__]))
 
 import text2sql
 app.include_router(text2sql.create_router(sys.modules[__name__]))

@@ -67,7 +67,7 @@ async def check(browser, url, root):
 
     message = page.locator('.message').nth(1)
     await message.locator('.annotation-form select').select_option('QUESTION')
-    await message.locator('.annotation-form input').fill('需要再验证外键删除时的行为。')
+    await message.locator('.annotation-form input[aria-label="批注内容"]').fill('需要再验证外键删除时的行为。')
     await message.locator('.annotation-form button').click()
     await expect(page.locator('.annotation')).to_have_count(1)
     await page.locator('.nav[data-view="todos"]').click()

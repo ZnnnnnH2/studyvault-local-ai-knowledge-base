@@ -86,7 +86,7 @@ class ErrorBookTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/mistakes').json()['groups'][0]['point_name'], '未归类')
 
     def test_weekly_counts_land_in_the_monday_week(self):
-        from datetime import date, timedelta
+        from datetime import date, datetime, timedelta, timezone
         question = self.annotate(self.q1, 'QUESTION', 'q')
         self.annotate(self.a2, 'CORRECTION', 'c')
         with app.connect() as db:
@@ -97,7 +97,9 @@ class ErrorBookTest(unittest.TestCase):
         weeks = {w['week_start']: w for w in self.client.get('/api/mistakes/weekly', params={'weeks': 52}).json()}
         self.assertTrue(all(date.fromisoformat(k).weekday() == 0 for k in weeks))
         self.assertEqual(len(weeks), 52)
-        self.assertEqual(max(weeks), (date.today() - timedelta(days=date.today().weekday())).isoformat())
+        # Weeks are bucketed with SQLite date('now'), which is UTC, not the local date.
+        today = datetime.now(timezone.utc).date()
+        self.assertEqual(max(weeks), (today - timedelta(days=today.weekday())).isoformat())
         if '2026-11-09' in weeks:  # inside the 52-week window
             self.assertEqual((weeks['2026-11-09']['noted'], weeks['2026-11-09']['settled']), (1, 1))
             self.assertEqual(weeks['2026-11-02']['noted'], 1)
